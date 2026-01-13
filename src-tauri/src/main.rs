@@ -5,13 +5,10 @@ use std::sync::{Mutex, Arc};
 use rusqlite::{params, Connection};
 use totp_rs::{Algorithm, TOTP};
 use argon2::{
-    password_hash::{
-        rand_core::OsRng,
-        PasswordHash, PasswordHasher, PasswordVerifier, SaltString
-    },
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2
 };
-use rand::RngCore; // For salt generation
+use rand::RngCore;
 use base64::{Engine as _, engine::general_purpose};
 
 // --- DATABASE MANAGER ---
@@ -85,7 +82,7 @@ fn register_user(state: State<AppState>, username: String, pass: String) -> Resu
     let salt_str = general_purpose::STANDARD.encode(salt_bytes).replace("=", "");
     
     // 2. Hash Password
-    let salt = SaltString::from_b64(&salt_str).map_err(|e| "Salt Error")?;
+    let salt = SaltString::from_b64(&salt_str).map_err(|_| "Salt Error")?;
     let argon2 = Argon2::default();
     let password_hash = argon2.hash_password(pass.as_bytes(), &salt)
         .map_err(|e| e.to_string())?
@@ -176,9 +173,9 @@ fn get_totp_token(secret: String) -> Result<String, String> {
     let clean_secret = secret.replace(" ", "").replace("=", "").to_uppercase();
     let secret_bytes = base32::decode(base32::Alphabet::RFC4648 { padding: false }, &clean_secret)
         .ok_or("Invalid Base32 Secret")?;
-    
-    // Using 5 args for totp-rs compatibility
-    let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, secret_bytes).map_err(|e| e.to_string())?;
+
+    // Use new_unchecked to allow secrets shorter than 128 bits (e.g., 80-bit secrets)
+    let totp = TOTP::new_unchecked(Algorithm::SHA1, 6, 1, 30, secret_bytes);
     Ok(totp.generate_current().map_err(|e| e.to_string())?)
 }
 

@@ -10,24 +10,38 @@ interface VaultEntry {
     notes?: string;
 }
 
-export default function Dashboard() {
+interface DashboardProps {
+    onLogout: () => void;
+}
+
+export default function Dashboard({ onLogout }: DashboardProps) {
     const [view, setView] = useState<"home" | "add" | "detail" | "sync">("home");
     const [entries, setEntries] = useState<VaultEntry[]>([]);
     const [currentEntry, setCurrentEntry] = useState<VaultEntry>({ uuid: "" });
     const [totpCode, setTotpCode] = useState("------");
     const [timeLeft, setTimeLeft] = useState(30);
+    const [highlightedUuid, setHighlightedUuid] = useState<string | null>(null);
+    const [showTotpSecret, setShowTotpSecret] = useState(false);
 
     useEffect(() => {
         refreshVault();
     }, []);
+
+    // Clear highlight after animation
+    useEffect(() => {
+        if (highlightedUuid) {
+            const timer = setTimeout(() => setHighlightedUuid(null), 1500);
+            return () => clearTimeout(timer);
+        }
+    }, [highlightedUuid]);
 
     // TOTP Timer Logic
     useEffect(() => {
         let interval: any;
         if (view === "detail" && currentEntry.totpSecret) {
             const fetchCode = () => {
-                invoke("get_totp_token", { secret: currentEntry.totpSecret })
-                    .then((c: any) => setTotpCode(c.code as string))
+                invoke<string>("get_totp_token", { secret: currentEntry.totpSecret })
+                    .then((code) => setTotpCode(code))
                     .catch(() => setTotpCode("Error"));
             };
             fetchCode();
@@ -42,36 +56,47 @@ export default function Dashboard() {
 
     async function refreshVault() {
         try {
-            const rawData = await invoke<any[]>("get_all_entries");
-            // SAFE PARSING LOGIC
+            const rawData = await invoke<any[]>("get_all_vault_entries");
             const parsed = rawData.map((e: any) => {
                 try {
-                    // Backend returns { payload: { password: "JSON" } }
-                    // We need to parse that.
-                    // The user provided code assumes 'e.data_blob' which implies raw DB access?
-                    // BUT 'get_all_entries' in 'main.rs' returns 'VaultEntryResponse' with 'payload'.
-                    // 'payload' has 'password' string.
-                    // So 'e.data_blob' will be undefined and this will crash if I don't fix it.
-
-                    // ADAPTER FIX:
-                    const jsonStr = e.payload.password;
-                    const data = JSON.parse(jsonStr);
-
-                    // User code expected:
-                    // const jsonString = String.fromCharCode(...e.data_blob); 
-                    // const data = JSON.parse(jsonString);
-
-                    return { id: e.id, uuid: e.payload.title || e.uuid, ...data };
+                    const jsonString = String.fromCharCode(...e.data_blob);
+                    const data = JSON.parse(jsonString);
+                    return { id: e.id, uuid: e.uuid, ...data };
                 } catch {
                     return { id: e.id, uuid: e.uuid };
                 }
             });
             setEntries(parsed);
-        } catch (e) { console.error(e); }
+        } catch {
+            // Failed to load vault entries
+        }
     }
 
     async function handleSave() {
         try {
+            // Validate Site Name
+            if (!currentEntry.uuid || currentEntry.uuid.trim() === "") {
+                alert("Site Name is required.");
+                return;
+            }
+
+            // Validate TOTP secret format if provided (Base32: A-Z, 2-7 only)
+            if (currentEntry.totpSecret) {
+                const cleanSecret = currentEntry.totpSecret.replace(/[\s=]/g, "").toUpperCase();
+                const base32Regex = /^[A-Z2-7]+$/;
+                if (!base32Regex.test(cleanSecret)) {
+                    alert("Invalid TOTP secret key. Only Base32 characters are allowed (A-Z and 2-7).");
+                    return;
+                }
+                // Also validate with backend
+                try {
+                    await invoke<string>("get_totp_token", { secret: currentEntry.totpSecret });
+                } catch {
+                    alert("Invalid TOTP secret key. Please enter a valid Base32 encoded secret.");
+                    return;
+                }
+            }
+
             const payload = {
                 username: currentEntry.username,
                 password: currentEntry.password,
@@ -79,44 +104,25 @@ export default function Dashboard() {
                 notes: currentEntry.notes
             };
             const jsonStr = JSON.stringify(payload);
-
-            // Backend expects 'VaultEntryPayload' struct for 'save_entry'/'update_entry' (Wait, update_entry I implemented takes blob!)
-            // My implementation of 'update_entry': fn update_entry(..., uuid, blob, nonce)
-            // So passing 'blob' from frontend IS CORRECT for 'update_entry'.
-            // BUT 'save_entry' in 'main.rs' takes 'VaultEntryPayload' struct!
-            // So 'save_entry' call needs to be adapted.
-
-            // Checking 'save_entry' signature in main.rs:
-            // async fn save_entry(payload: VaultEntryPayload, ...)
-
-            // User code: invoke("save_entry", { uuid: ..., blob: ..., nonce: [] })
-            // THIS WILL FAIL for 'save_entry'.
-
-            // I must Adapt 'save_entry' call to match 'VaultEntryPayload'.
-            // AND 'update_entry' call matches my Manual Implementation (which takes blob).
-
             const blob = Array.from(new TextEncoder().encode(jsonStr));
 
+            const isNewEntry = !currentEntry.id;
+            const savedUuid = currentEntry.uuid;
+
             if (currentEntry.id) {
-                // My custom Update Entry takes blob.
                 await invoke("update_entry", { id: currentEntry.id, uuid: currentEntry.uuid, blob, nonce: [] });
             } else {
-                // Save Entry takes Payload struct.
-                await invoke("save_entry", {
-                    payload: {
-                        title: currentEntry.uuid,
-                        username: currentEntry.username || "MyUser",
-                        password: jsonStr, // Store the huge JSON in password field?
-                        // The user code packs everything into one JSON.
-                        // So 'password' field in DB will hold the JSON.
-                        notes: "",
-                        totp_secret: null
-                    }
-                });
+                await invoke("save_entry", { uuid: currentEntry.uuid, blob, nonce: [] });
             }
 
             await refreshVault();
-            setView("home");
+            setShowTotpSecret(false);
+
+            if (isNewEntry) {
+                setHighlightedUuid(savedUuid);
+                setCurrentEntry({ uuid: "" });
+                setView("home");
+            }
         } catch (e) {
             alert("Save Failed: " + e);
         }
@@ -125,18 +131,37 @@ export default function Dashboard() {
     // --- STYLES ---
     const inputStyle = { width: "100%", padding: "12px", background: "#333", border: "none", color: "white", borderRadius: "6px", marginBottom: "15px", boxSizing: "border-box" as const };
     const sidebarBtnStyle = (active: boolean) => ({
-        background: active ? "#8A2BE2" : "transparent", padding: "10px", borderRadius: "10px", border: "none", fontSize: "24px", cursor: "pointer", marginBottom: "10px"
+        background: active ? "rgba(138, 43, 226, 0.3)" : "transparent", padding: "10px", borderRadius: "10px", border: "none", fontSize: "24px", cursor: "pointer", marginBottom: "10px"
     });
 
     return (
         <div style={{ display: "flex", height: "100vh", background: "#1a1a1a", color: "white", fontFamily: "sans-serif" }}>
             {/* Sidebar */}
-            <div style={{ width: "90px", background: "#111", padding: "20px 0", display: "flex", flexDirection: "column", alignItems: "center", borderRight: "1px solid #333" }}>
-                <button onClick={() => setView("home")} style={{ ...sidebarBtnStyle(false), marginBottom: "30px" }}>⬅️</button>
-                <button onClick={() => setView("add")} style={sidebarBtnStyle(view === "add")}>➕</button>
-                <button onClick={() => setView("home")} style={sidebarBtnStyle(view === "home")}>🏠</button>
+            <div style={{ width: "70px", background: "#111", padding: "20px 0", display: "flex", flexDirection: "column", alignItems: "center", borderRight: "1px solid #333" }}>
+                <button onClick={() => setView("home")} style={sidebarBtnStyle(view === "home")}>
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={view === "home" ? "#fff" : "#888"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                    </svg>
+                </button>
+                <button onClick={() => setView("add")} style={sidebarBtnStyle(view === "add" || view === "detail")}>
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={view === "add" || view === "detail" ? "#fff" : "#888"} strokeWidth="1.5" strokeLinecap="round">
+                        <path d="M12 5v14M5 12h14"/>
+                    </svg>
+                </button>
                 <div style={{ flexGrow: 1 }}></div>
-                <button onClick={() => setView("sync")} style={sidebarBtnStyle(view === "sync")}>🔄</button>
+                <button onClick={() => setView("sync")} style={sidebarBtnStyle(view === "sync")}>
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={view === "sync" ? "#fff" : "#888"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M23 4v6h-6M1 20v-6h6"/>
+                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                    </svg>
+                </button>
+                <button onClick={onLogout} style={{ ...sidebarBtnStyle(false), marginTop: "10px" }}>
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#888" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                        <polyline points="16 17 21 12 16 7"/>
+                        <line x1="21" y1="12" x2="9" y2="12"/>
+                    </svg>
+                </button>
             </div>
 
             {/* Content */}
@@ -146,7 +171,19 @@ export default function Dashboard() {
                         <h1>My Vault</h1>
                         <input placeholder="Search..." style={inputStyle} />
                         {entries.map(e => (
-                            <div key={e.id} onClick={() => { setCurrentEntry(e); setView("detail"); }} style={{ padding: "15px", background: "#252525", marginBottom: "10px", borderRadius: "8px", cursor: "pointer", border: "1px solid #333" }}>
+                            <div
+                                key={e.id}
+                                onClick={() => { setCurrentEntry(e); setShowTotpSecret(false); setView("detail"); }}
+                                style={{
+                                    padding: "15px",
+                                    background: highlightedUuid === e.uuid ? "rgba(138, 43, 226, 0.3)" : "#252525",
+                                    marginBottom: "10px",
+                                    borderRadius: "8px",
+                                    cursor: "pointer",
+                                    border: highlightedUuid === e.uuid ? "1px solid rgba(138, 43, 226, 0.6)" : "1px solid #333",
+                                    transition: "all 0.5s ease-out"
+                                }}
+                            >
                                 <strong>{e.uuid}</strong>
                             </div>
                         ))}
@@ -154,24 +191,112 @@ export default function Dashboard() {
                 )}
 
                 {(view === "add" || view === "detail") && (
-                    <div style={{ maxWidth: "500px" }}>
-                        <h2>{view === "add" ? "Add Entry" : "Edit Entry"}</h2>
-                        <input placeholder="Site Name" value={currentEntry.uuid} onChange={e => setCurrentEntry({ ...currentEntry, uuid: e.target.value })} style={inputStyle} />
-                        <input placeholder="Username" value={currentEntry.username || ""} onChange={e => setCurrentEntry({ ...currentEntry, username: e.target.value })} style={inputStyle} />
-                        <input placeholder="Password" value={currentEntry.password || ""} onChange={e => setCurrentEntry({ ...currentEntry, password: e.target.value })} style={inputStyle} />
-
-                        <div style={{ background: "#222", padding: "15px", borderRadius: "8px", marginBottom: "15px" }}>
-                            <label style={{ color: "#888", fontSize: "12px" }}>TOTP Secret (Base32)</label>
-                            <input placeholder="JBSWY..." value={currentEntry.totpSecret || ""} onChange={e => setCurrentEntry({ ...currentEntry, totpSecret: e.target.value })} style={{ ...inputStyle, marginBottom: 5 }} />
-                            {view === "detail" && currentEntry.totpSecret && (
-                                <div style={{ fontSize: "24px", color: "#007AFF", fontFamily: "monospace", marginTop: "10px" }}>
-                                    {totpCode} <span style={{ fontSize: "14px", color: "#555" }}>({timeLeft}s)</span>
+                    <form
+                        style={{ maxWidth: "500px" }}
+                        onSubmit={(e) => { e.preventDefault(); handleSave(); }}
+                    >
+                        <button
+                            type="button"
+                            onClick={() => { setCurrentEntry({ uuid: "" }); setShowTotpSecret(false); setView("home"); }}
+                            style={{ background: "none", border: "none", color: "#888", cursor: "pointer", padding: "0", marginBottom: "20px", display: "flex", alignItems: "center", gap: "6px", fontSize: "14px" }}
+                        >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#888" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M19 12H5M12 19l-7-7 7-7"/>
+                            </svg>
+                            Back
+                        </button>
+                        {view === "add" ? (
+                            <>
+                                <h2 style={{ marginTop: "0" }}>Add Entry</h2>
+                                <div style={{ marginBottom: "8px" }}>
+                                    <label style={{ color: "#888", fontSize: "12px", display: "block", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Site Name</label>
+                                    <input value={currentEntry.uuid} onChange={e => setCurrentEntry({ ...currentEntry, uuid: e.target.value })} style={inputStyle} autoFocus />
                                 </div>
+                            </>
+                        ) : (
+                            <input
+                                value={currentEntry.uuid}
+                                onChange={e => setCurrentEntry({ ...currentEntry, uuid: e.target.value })}
+                                style={{
+                                    background: "transparent",
+                                    border: "none",
+                                    borderBottom: "1px solid transparent",
+                                    color: "white",
+                                    fontSize: "1.5em",
+                                    fontWeight: "bold",
+                                    padding: "0",
+                                    marginTop: "0",
+                                    marginBottom: "20px",
+                                    width: "100%",
+                                    outline: "none"
+                                }}
+                                onFocus={(e) => e.target.style.borderBottom = "1px solid #555"}
+                                onBlur={(e) => e.target.style.borderBottom = "1px solid transparent"}
+                            />
+                        )}
+
+                        <div style={{ marginBottom: "8px" }}>
+                            <label style={{ color: "#888", fontSize: "12px", display: "block", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Username</label>
+                            <input value={currentEntry.username || ""} onChange={e => setCurrentEntry({ ...currentEntry, username: e.target.value })} style={inputStyle} />
+                        </div>
+
+                        <div style={{ marginBottom: "8px" }}>
+                            <label style={{ color: "#888", fontSize: "12px", display: "block", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Password</label>
+                            <input type="password" value={currentEntry.password || ""} onChange={e => setCurrentEntry({ ...currentEntry, password: e.target.value })} style={inputStyle} />
+                        </div>
+
+                        <div style={{ marginBottom: "8px" }}>
+                            <label style={{ color: "#888", fontSize: "12px", display: "block", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                                {view === "detail" ? "Verification Code" : "TOTP Secret"} <span style={{ color: "#555", textTransform: "none" }}>(Optional)</span>
+                            </label>
+                            {view === "add" || showTotpSecret ? (
+                                <input placeholder="e.g. JBSWY3DPEHPK3PXP" value={currentEntry.totpSecret || ""} onChange={e => setCurrentEntry({ ...currentEntry, totpSecret: e.target.value })} style={inputStyle} />
+                            ) : currentEntry.totpSecret ? (
+                                <>
+                                    <div style={{ fontSize: "32px", color: "#8A2BE2", fontFamily: "monospace", marginBottom: "8px" }}>
+                                        {totpCode} <span style={{ fontSize: "14px", color: "#555" }}>({timeLeft}s)</span>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowTotpSecret(true)}
+                                        style={{ background: "none", border: "none", color: "#555", cursor: "pointer", padding: "0", fontSize: "12px" }}
+                                    >
+                                        Edit secret key
+                                    </button>
+                                </>
+                            ) : (
+                                <button
+                                    type="button"
+                                    onClick={() => setShowTotpSecret(true)}
+                                    style={{ background: "none", border: "1px dashed #444", color: "#555", cursor: "pointer", padding: "12px", borderRadius: "6px", width: "100%", fontSize: "14px" }}
+                                >
+                                    + Add verification code
+                                </button>
                             )}
                         </div>
 
-                        <textarea placeholder="Notes" rows={4} value={currentEntry.notes || ""} onChange={e => setCurrentEntry({ ...currentEntry, notes: e.target.value })} style={inputStyle} />
-                        <button onClick={handleSave} style={{ width: "100%", padding: "15px", background: "#007AFF", color: "white", border: "none", borderRadius: "8px", fontWeight: "bold", fontSize: "16px", cursor: "pointer" }}>Save</button>
+                        <div style={{ marginBottom: "8px" }}>
+                            <label style={{ color: "#888", fontSize: "12px", display: "block", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Notes <span style={{ color: "#555", textTransform: "none" }}>(Optional)</span></label>
+                            <textarea rows={4} value={currentEntry.notes || ""} onChange={e => setCurrentEntry({ ...currentEntry, notes: e.target.value })} style={inputStyle} />
+                        </div>
+
+                        <button type="submit" style={{ width: "100%", padding: "15px", background: "#8A2BE2", color: "white", border: "none", borderRadius: "8px", fontWeight: "bold", fontSize: "16px", cursor: "pointer" }}>Save</button>
+                    </form>
+                )}
+
+                {view === "sync" && (
+                    <div style={{ maxWidth: "500px" }}>
+                        <button
+                            onClick={() => setView("home")}
+                            style={{ background: "none", border: "none", color: "#888", cursor: "pointer", padding: "0", marginBottom: "20px", display: "flex", alignItems: "center", gap: "6px", fontSize: "14px" }}
+                        >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#888" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M19 12H5M12 19l-7-7 7-7"/>
+                            </svg>
+                            Back
+                        </button>
+                        <h2 style={{ marginTop: "0" }}>Sync</h2>
+                        <p style={{ color: "#888" }}>Sync functionality coming soon.</p>
                     </div>
                 )}
             </div>

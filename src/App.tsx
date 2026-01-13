@@ -18,8 +18,8 @@ function App() {
         try {
             const status = await invoke("check_registration_status");
             setIsRegistered(status as boolean);
-        } catch (e) {
-            console.error("Check failed:", e);
+        } catch {
+            // Registration check failed, assume not registered
         }
     }
 
@@ -29,7 +29,6 @@ function App() {
             return;
         }
         try {
-            // FIX: Sending 'pass' to match Rust backend
             await invoke("register_user", { username, pass: password });
             setIsRegistered(true);
             setError("");
@@ -41,7 +40,6 @@ function App() {
 
     async function handleLogin() {
         try {
-            // FIX: Sending 'pass' to match Rust backend
             await invoke("unlock_vault", { username, pass: password });
             setIsAuthenticated(true);
             setError("");
@@ -50,8 +48,14 @@ function App() {
         }
     }
 
+    function handleLogout() {
+        setIsAuthenticated(false);
+        setUsername("");
+        setPassword("");
+    }
+
     if (isAuthenticated) {
-        return <Dashboard />;
+        return <Dashboard onLogout={handleLogout} />;
     }
 
     return (
@@ -65,7 +69,13 @@ function App() {
             color: "white",
             fontFamily: "sans-serif"
         }}>
-            <div style={{ width: "300px", textAlign: "center" }}>
+            <form
+                style={{ width: "300px", textAlign: "center" }}
+                onSubmit={(e) => {
+                    e.preventDefault();
+                    isRegistered ? handleLogin() : handleRegister();
+                }}
+            >
                 <h1 style={{ marginBottom: "10px" }}>VibeVault</h1>
                 <p style={{ color: "#888", marginBottom: "30px" }}>
                     {isRegistered ? "Unlock your vault" : "Create your Master Account"}
@@ -77,6 +87,7 @@ function App() {
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
                     style={inputStyle}
+                    autoFocus
                 />
                 <input
                     type="password"
@@ -89,11 +100,11 @@ function App() {
                 {error && <p style={{ color: "#ff4444", fontSize: "14px" }}>{error}</p>}
 
                 <button
-                    onClick={isRegistered ? handleLogin : handleRegister}
+                    type="submit"
                     style={{
                         width: "100%",
                         padding: "12px",
-                        background: "#8A2BE2", // Purple
+                        background: "#8A2BE2",
                         color: "white",
                         border: "none",
                         borderRadius: "6px",
@@ -105,7 +116,7 @@ function App() {
                 >
                     {isRegistered ? "Unlock Vault" : "Create Account"}
                 </button>
-            </div>
+            </form>
         </div>
     );
 }
