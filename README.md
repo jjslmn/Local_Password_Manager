@@ -7,50 +7,45 @@ A secure, offline-first password manager built with Tauri 2.0. Store your creden
 - **Local-first storage**: All data stored in SQLite on your device
 - **Strong encryption**: Argon2id password hashing with AES-256-GCM encryption
 - **TOTP support**: Built-in two-factor authentication code generator
-- **Cross-platform**: Works on Windows, macOS, and Linux
+- **Desktop native**: Runs as a native app on Windows and Ubuntu
 
-## Prerequisites
+## Download & Install
 
-### All Platforms
+### Pre-built Releases
+
+Download the latest release for your platform from the [Releases](https://github.com/yourusername/vibevault/releases) page:
+
+| Platform | Download | Install Method |
+|----------|----------|----------------|
+| Windows 10/11 | `VibeVault_1.0.0_x64-setup.exe` | Run installer, follow prompts |
+| Windows 10/11 | `VibeVault_1.0.0_x64_en-US.msi` | Run MSI, follow prompts |
+| Ubuntu/Debian | `vibevault_1.0.0_amd64.deb` | `sudo dpkg -i vibevault_1.0.0_amd64.deb` |
+| Ubuntu/Linux | `vibevault_1.0.0_amd64.AppImage` | `chmod +x *.AppImage && ./vibevault_1.0.0_amd64.AppImage` |
+
+After installation, VibeVault will appear in your applications menu and can be pinned to your taskbar.
+
+## Building from Source
+
+### Prerequisites
+
+#### All Platforms
 
 - [Node.js](https://nodejs.org/) (v18 or later)
 - [Rust](https://rustup.rs/) (latest stable)
-
-### Platform-Specific Requirements
 
 #### Windows
 
 - [Microsoft Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
 - WebView2 (included in Windows 10/11)
 
-#### macOS
-
-- Xcode Command Line Tools:
-  ```bash
-  xcode-select --install
-  ```
-
-#### Linux (Debian/Ubuntu)
+#### Ubuntu/Debian
 
 ```bash
 sudo apt update
 sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 ```
 
-#### Linux (Fedora)
-
-```bash
-sudo dnf install webkit2gtk4.1-devel openssl-devel curl wget file libappindicator-gtk3-devel librsvg2-devel
-sudo dnf group install "C Development Tools and Libraries"
-```
-
-#### Linux (Arch)
-
-```bash
-sudo pacman -S webkit2gtk-4.1 base-devel curl wget file openssl appmenu-gtk-module libappindicator-gtk3 librsvg
-```
-
-## Installation
+### Build Steps
 
 1. Clone the repository:
    ```bash
@@ -63,30 +58,21 @@ sudo pacman -S webkit2gtk-4.1 base-devel curl wget file openssl appmenu-gtk-modu
    npm install
    ```
 
-3. Run in development mode:
+3. Build for production:
    ```bash
-   npm run tauri dev
+   npm run tauri build
    ```
 
-## Building for Production
+### Build Outputs
 
-Build an optimized release for your current platform:
+| Platform | Output Location | Description |
+|----------|-----------------|-------------|
+| Windows | `src-tauri/target/release/bundle/nsis/` | NSIS installer (.exe) |
+| Windows | `src-tauri/target/release/bundle/msi/` | MSI installer |
+| Ubuntu | `src-tauri/target/release/bundle/deb/` | Debian package (.deb) |
+| Linux | `src-tauri/target/release/bundle/appimage/` | AppImage (portable) |
 
-```bash
-npm run tauri build
-```
-
-The built application will be in `src-tauri/target/release/bundle/`.
-
-### Build Outputs by Platform
-
-| Platform | Output Location |
-|----------|-----------------|
-| Windows  | `src-tauri/target/release/bundle/msi/` and `nsis/` |
-| macOS    | `src-tauri/target/release/bundle/macos/` and `dmg/` |
-| Linux    | `src-tauri/target/release/bundle/deb/` and `appimage/` |
-
-## Development Commands
+## Development
 
 ```bash
 # Start development server with hot reload
@@ -112,7 +98,6 @@ VibeVault uses industry-standard cryptography:
 
 All vault data is stored locally in an SQLite database at:
 - **Windows**: `%APPDATA%\com.vibevault.app\vibevault.db`
-- **macOS**: `~/Library/Application Support/com.vibevault.app/vibevault.db`
 - **Linux**: `~/.local/share/com.vibevault.app/vibevault.db`
 
 ## Project Structure
