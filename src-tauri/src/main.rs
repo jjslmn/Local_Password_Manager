@@ -21,9 +21,9 @@ impl DatabaseManager {
         let app_dir = app_handle.path().app_data_dir().expect("Failed to get app data dir");
         std::fs::create_dir_all(&app_dir).expect("Failed to create app data dir");
         let db_path = app_dir.join("vibevault.db");
-        
+
         let conn = Connection::open(db_path).expect("Failed to open DB");
-        
+
         // 1. Create Users Table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS users (
@@ -34,16 +34,69 @@ impl DatabaseManager {
             [],
         ).expect("Failed to create users table");
 
-        // 2. Create Vault Table
+        // 2. Create Profiles Table
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS vault_entries (
+            "CREATE TABLE IF NOT EXISTS profiles (
                 id INTEGER PRIMARY KEY,
-                uuid TEXT NOT NULL,
-                data_blob BLOB NOT NULL,
-                nonce BLOB NOT NULL
+                name TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )",
             [],
-        ).expect("Failed to create vault table");
+        ).expect("Failed to create profiles table");
+
+        // 3. Insert default 'Personal' profile if profiles table is empty
+        let profile_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM profiles",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(0);
+
+        if profile_count == 0 {
+            conn.execute(
+                "INSERT INTO profiles (name) VALUES ('Personal')",
+                [],
+            ).expect("Failed to create default profile");
+        }
+
+        // 4. Create Vault Table (with profile_id if new, or migrate if existing)
+        // Check if vault_entries table exists
+        let table_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='vault_entries'",
+            [],
+            |row| row.get::<_, i64>(0).map(|c| c > 0),
+        ).unwrap_or(false);
+
+        if !table_exists {
+            // Create new table with profile_id
+            conn.execute(
+                "CREATE TABLE vault_entries (
+                    id INTEGER PRIMARY KEY,
+                    uuid TEXT NOT NULL,
+                    data_blob BLOB NOT NULL,
+                    nonce BLOB NOT NULL,
+                    profile_id INTEGER NOT NULL DEFAULT 1,
+                    FOREIGN KEY (profile_id) REFERENCES profiles(id)
+                )",
+                [],
+            ).expect("Failed to create vault table");
+        } else {
+            // Check if profile_id column exists
+            let has_profile_id: bool = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('vault_entries') WHERE name='profile_id'",
+                [],
+                |row| row.get::<_, i64>(0).map(|c| c > 0),
+            ).unwrap_or(false);
+
+            if !has_profile_id {
+                // Migration: Add profile_id column to existing table
+                conn.execute(
+                    "ALTER TABLE vault_entries ADD COLUMN profile_id INTEGER NOT NULL DEFAULT 1",
+                    [],
+                ).expect("Failed to add profile_id column");
+
+                // All existing entries are now assigned to default profile (id=1)
+            }
+        }
 
         DatabaseManager { conn }
     }
@@ -52,6 +105,7 @@ impl DatabaseManager {
 // --- APP STATE ---
 struct AppState {
     db: Arc<Mutex<Option<DatabaseManager>>>,
+    active_profile_id: Arc<Mutex<i64>>,
 }
 
 // --- USER MANAGEMENT COMMANDS ---
@@ -119,12 +173,15 @@ fn unlock_vault(state: State<AppState>, username: String, pass: String) -> Resul
 
 #[tauri::command]
 fn get_all_vault_entries(state: State<AppState>) -> Result<Vec<serde_json::Value>, String> {
+    let active_profile = *state.active_profile_id.lock().map_err(|_| "Lock failed")?;
     let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
     let db = db_guard.as_ref().ok_or("DB not init")?;
 
-    let mut stmt = db.conn.prepare("SELECT id, uuid, data_blob FROM vault_entries").map_err(|e| e.to_string())?;
-    
-    let rows = stmt.query_map([], |row| {
+    let mut stmt = db.conn.prepare(
+        "SELECT id, uuid, data_blob FROM vault_entries WHERE profile_id = ?1"
+    ).map_err(|e| e.to_string())?;
+
+    let rows = stmt.query_map(params![active_profile], |row| {
         let id: i64 = row.get(0)?;
         let uuid: String = row.get(1)?;
         let blob: Vec<u8> = row.get(2)?;
@@ -143,13 +200,17 @@ fn get_all_vault_entries(state: State<AppState>) -> Result<Vec<serde_json::Value
 }
 
 #[tauri::command]
-fn save_entry(state: State<AppState>, uuid: String, blob: Vec<u8>, nonce: Vec<u8>) -> Result<String, String> {
+fn save_entry(state: State<AppState>, uuid: String, blob: Vec<u8>, nonce: Vec<u8>, profile_id: Option<i64>) -> Result<String, String> {
+    let target_profile = match profile_id {
+        Some(id) => id,
+        None => *state.active_profile_id.lock().map_err(|_| "Lock failed")?
+    };
     let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
     let db = db_guard.as_ref().ok_or("DB not init")?;
 
     db.conn.execute(
-        "INSERT INTO vault_entries (uuid, data_blob, nonce) VALUES (?1, ?2, ?3)",
-        params![uuid, blob, nonce],
+        "INSERT INTO vault_entries (uuid, data_blob, nonce, profile_id) VALUES (?1, ?2, ?3, ?4)",
+        params![uuid, blob, nonce, target_profile],
     ).map_err(|e| e.to_string())?;
 
     Ok("Saved".to_string())
@@ -157,15 +218,150 @@ fn save_entry(state: State<AppState>, uuid: String, blob: Vec<u8>, nonce: Vec<u8
 
 #[tauri::command]
 fn update_entry(state: State<AppState>, id: i64, uuid: String, blob: Vec<u8>, nonce: Vec<u8>) -> Result<String, String> {
+    let active_profile = *state.active_profile_id.lock().map_err(|_| "Lock failed")?;
+    let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
+    let db = db_guard.as_ref().ok_or("DB not init")?;
+
+    // Validate entry belongs to active profile
+    let rows_updated = db.conn.execute(
+        "UPDATE vault_entries SET uuid = ?1, data_blob = ?2, nonce = ?3 WHERE id = ?4 AND profile_id = ?5",
+        params![uuid, blob, nonce, id, active_profile],
+    ).map_err(|e| e.to_string())?;
+
+    if rows_updated == 0 {
+        return Err("Entry not found or belongs to different profile".to_string());
+    }
+
+    Ok("Updated".to_string())
+}
+
+#[tauri::command]
+fn delete_entry(state: State<AppState>, id: i64) -> Result<String, String> {
+    let active_profile = *state.active_profile_id.lock().map_err(|_| "Lock failed")?;
+    let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
+    let db = db_guard.as_ref().ok_or("DB not init")?;
+
+    // Validate entry belongs to active profile
+    let rows_deleted = db.conn.execute(
+        "DELETE FROM vault_entries WHERE id = ?1 AND profile_id = ?2",
+        params![id, active_profile],
+    ).map_err(|e| e.to_string())?;
+
+    if rows_deleted == 0 {
+        return Err("Entry not found or belongs to different profile".to_string());
+    }
+
+    Ok("Deleted".to_string())
+}
+
+// --- PROFILE COMMANDS ---
+
+#[tauri::command]
+fn create_profile(state: State<AppState>, name: String) -> Result<i64, String> {
     let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
     let db = db_guard.as_ref().ok_or("DB not init")?;
 
     db.conn.execute(
-        "UPDATE vault_entries SET uuid = ?1, data_blob = ?2, nonce = ?3 WHERE id = ?4",
-        params![uuid, blob, nonce, id],
+        "INSERT INTO profiles (name) VALUES (?1)",
+        params![name],
     ).map_err(|e| e.to_string())?;
 
-    Ok("Updated".to_string())
+    let id = db.conn.last_insert_rowid();
+    Ok(id)
+}
+
+#[tauri::command]
+fn get_all_profiles(state: State<AppState>) -> Result<Vec<serde_json::Value>, String> {
+    let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
+    let db = db_guard.as_ref().ok_or("DB not init")?;
+
+    let mut stmt = db.conn.prepare(
+        "SELECT p.id, p.name, p.created_at, COUNT(v.id) as entry_count
+         FROM profiles p
+         LEFT JOIN vault_entries v ON v.profile_id = p.id
+         GROUP BY p.id
+         ORDER BY p.id"
+    ).map_err(|e| e.to_string())?;
+
+    let rows = stmt.query_map([], |row| {
+        let id: i64 = row.get(0)?;
+        let name: String = row.get(1)?;
+        let created_at: String = row.get(2)?;
+        let entry_count: i64 = row.get(3)?;
+        Ok(serde_json::json!({
+            "id": id,
+            "name": name,
+            "createdAt": created_at,
+            "entryCount": entry_count
+        }))
+    }).map_err(|e| e.to_string())?;
+
+    let mut profiles = Vec::new();
+    for row in rows {
+        profiles.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(profiles)
+}
+
+#[tauri::command]
+fn rename_profile(state: State<AppState>, id: i64, name: String) -> Result<String, String> {
+    let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
+    let db = db_guard.as_ref().ok_or("DB not init")?;
+
+    db.conn.execute(
+        "UPDATE profiles SET name = ?1 WHERE id = ?2",
+        params![name, id],
+    ).map_err(|e| e.to_string())?;
+
+    Ok("Renamed".to_string())
+}
+
+#[tauri::command]
+fn delete_profile(state: State<AppState>, id: i64) -> Result<String, String> {
+    let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
+    let db = db_guard.as_ref().ok_or("DB not init")?;
+
+    // Check if profile has any entries
+    let entry_count: i64 = db.conn.query_row(
+        "SELECT COUNT(*) FROM vault_entries WHERE profile_id = ?1",
+        params![id],
+        |row| row.get(0),
+    ).unwrap_or(0);
+
+    if entry_count > 0 {
+        return Err("Cannot delete profile with entries. Move or delete entries first.".to_string());
+    }
+
+    // Check if it's the last profile
+    let profile_count: i64 = db.conn.query_row(
+        "SELECT COUNT(*) FROM profiles",
+        [],
+        |row| row.get(0),
+    ).unwrap_or(0);
+
+    if profile_count <= 1 {
+        return Err("Cannot delete the last profile.".to_string());
+    }
+
+    db.conn.execute(
+        "DELETE FROM profiles WHERE id = ?1",
+        params![id],
+    ).map_err(|e| e.to_string())?;
+
+    Ok("Deleted".to_string())
+}
+
+#[tauri::command]
+fn get_active_profile(state: State<AppState>) -> Result<i64, String> {
+    let active_id = state.active_profile_id.lock().map_err(|_| "Lock failed")?;
+    Ok(*active_id)
+}
+
+#[tauri::command]
+fn set_active_profile(state: State<AppState>, id: i64) -> Result<String, String> {
+    let mut active_id = state.active_profile_id.lock().map_err(|_| "Lock failed")?;
+    *active_id = id;
+    Ok("Active profile set".to_string())
 }
 
 #[tauri::command]
@@ -183,6 +379,7 @@ fn get_totp_token(secret: String) -> Result<String, String> {
 fn main() {
     let app_state = AppState {
         db: Arc::new(Mutex::new(None)),
+        active_profile_id: Arc::new(Mutex::new(1)), // Default to profile 1 (Personal)
     };
 
     tauri::Builder::default()
@@ -200,8 +397,15 @@ fn main() {
             unlock_vault,
             save_entry,
             update_entry,
+            delete_entry,
             get_all_vault_entries,
-            get_totp_token
+            get_totp_token,
+            create_profile,
+            get_all_profiles,
+            rename_profile,
+            delete_profile,
+            get_active_profile,
+            set_active_profile
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

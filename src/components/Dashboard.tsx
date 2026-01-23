@@ -10,21 +10,37 @@ interface VaultEntry {
     notes?: string;
 }
 
+interface Profile {
+    id: number;
+    name: string;
+    createdAt: string;
+    entryCount: number;
+}
+
 interface DashboardProps {
     onLogout: () => void;
 }
 
 export default function Dashboard({ onLogout }: DashboardProps) {
-    const [view, setView] = useState<"home" | "add" | "detail" | "sync">("home");
+    const [view, setView] = useState<"home" | "add" | "detail" | "sync" | "profiles">("home");
     const [entries, setEntries] = useState<VaultEntry[]>([]);
     const [currentEntry, setCurrentEntry] = useState<VaultEntry>({ uuid: "" });
     const [totpCode, setTotpCode] = useState("------");
     const [timeLeft, setTimeLeft] = useState(30);
     const [highlightedUuid, setHighlightedUuid] = useState<string | null>(null);
     const [showTotpSecret, setShowTotpSecret] = useState(false);
+    const [showDeleteModal, setShowDeleteModal] = useState(false);
+    const [deleteTargetEntry, setDeleteTargetEntry] = useState<VaultEntry | null>(null);
+    const [profiles, setProfiles] = useState<Profile[]>([]);
+    const [activeProfile, setActiveProfile] = useState<Profile | null>(null);
+    const [showProfileDropdown, setShowProfileDropdown] = useState(false);
+    const [newProfileName, setNewProfileName] = useState("");
+    const [editingProfileId, setEditingProfileId] = useState<number | null>(null);
+    const [editingProfileName, setEditingProfileName] = useState("");
+    const [saveToProfileId, setSaveToProfileId] = useState<number | null>(null);
 
     useEffect(() => {
-        refreshVault();
+        loadProfiles();
     }, []);
 
     // Clear highlight after animation
@@ -53,6 +69,88 @@ export default function Dashboard({ onLogout }: DashboardProps) {
         }
         return () => clearInterval(interval);
     }, [view, currentEntry.totpSecret]);
+
+    async function loadProfiles() {
+        try {
+            const profileList = await invoke<Profile[]>("get_all_profiles");
+            setProfiles(profileList);
+            const activeId = await invoke<number>("get_active_profile");
+            const active = profileList.find(p => p.id === activeId) || profileList[0];
+            setActiveProfile(active);
+            if (active) {
+                await invoke("set_active_profile", { id: active.id });
+                refreshVault();
+            }
+        } catch {
+            // Failed to load profiles
+        }
+    }
+
+    async function handleProfileSwitch(profile: Profile) {
+        try {
+            await invoke("set_active_profile", { id: profile.id });
+            setActiveProfile(profile);
+            setShowProfileDropdown(false);
+            await refreshVault();
+        } catch (e) {
+            alert("Failed to switch profile: " + e);
+        }
+    }
+
+    async function handleCreateProfile() {
+        if (!newProfileName.trim()) {
+            alert("Profile name is required.");
+            return;
+        }
+        try {
+            await invoke("create_profile", { name: newProfileName.trim() });
+            setNewProfileName("");
+            await loadProfiles();
+        } catch (e) {
+            alert("Failed to create profile: " + e);
+        }
+    }
+
+    async function handleRenameProfile(id: number) {
+        if (!editingProfileName.trim()) {
+            alert("Profile name is required.");
+            return;
+        }
+        try {
+            await invoke("rename_profile", { id, name: editingProfileName.trim() });
+            setEditingProfileId(null);
+            setEditingProfileName("");
+            await loadProfiles();
+        } catch (e) {
+            alert("Failed to rename profile: " + e);
+        }
+    }
+
+    async function handleDeleteProfile(profile: Profile) {
+        if (profile.entryCount > 0) {
+            alert("Cannot delete profile with entries. Move or delete entries first.");
+            return;
+        }
+        if (profiles.length <= 1) {
+            alert("Cannot delete the last profile.");
+            return;
+        }
+        if (!confirm(`Delete profile "${profile.name}"? This cannot be undone.`)) {
+            return;
+        }
+        try {
+            await invoke("delete_profile", { id: profile.id });
+            if (activeProfile?.id === profile.id) {
+                const remaining = profiles.filter(p => p.id !== profile.id);
+                if (remaining.length > 0) {
+                    await handleProfileSwitch(remaining[0]);
+                }
+            }
+            await loadProfiles();
+        } catch (e) {
+            alert("Failed to delete profile: " + e);
+        }
+    }
 
     async function refreshVault() {
         try {
@@ -112,19 +210,42 @@ export default function Dashboard({ onLogout }: DashboardProps) {
             if (currentEntry.id) {
                 await invoke("update_entry", { id: currentEntry.id, uuid: currentEntry.uuid, blob, nonce: [] });
             } else {
-                await invoke("save_entry", { uuid: currentEntry.uuid, blob, nonce: [] });
+                // Pass profileId if a specific profile was selected, otherwise use active profile
+                const profileId = saveToProfileId || activeProfile?.id || null;
+                await invoke("save_entry", { uuid: currentEntry.uuid, blob, nonce: [], profileId });
             }
 
             await refreshVault();
+            await loadProfiles(); // Refresh profile entry counts
             setShowTotpSecret(false);
 
             if (isNewEntry) {
                 setHighlightedUuid(savedUuid);
                 setCurrentEntry({ uuid: "" });
+                setSaveToProfileId(null); // Reset profile selection
                 setView("home");
             }
         } catch (e) {
             alert("Save Failed: " + e);
+        }
+    }
+
+    function handleDeleteClick(entry: VaultEntry) {
+        setDeleteTargetEntry(entry);
+        setShowDeleteModal(true);
+    }
+
+    async function handleDeleteConfirm() {
+        if (!deleteTargetEntry?.id) return;
+        try {
+            await invoke("delete_entry", { id: deleteTargetEntry.id });
+            await refreshVault();
+            setShowDeleteModal(false);
+            setDeleteTargetEntry(null);
+            setCurrentEntry({ uuid: "" });
+            setView("home");
+        } catch (e) {
+            alert("Delete Failed: " + e);
         }
     }
 
@@ -148,6 +269,14 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                         <path d="M12 5v14M5 12h14"/>
                     </svg>
                 </button>
+                <button onClick={() => setView("profiles")} style={sidebarBtnStyle(view === "profiles")}>
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={view === "profiles" ? "#fff" : "#888"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                        <circle cx="9" cy="7" r="4"/>
+                        <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                        <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                    </svg>
+                </button>
                 <div style={{ flexGrow: 1 }}></div>
                 <button onClick={() => setView("sync")} style={sidebarBtnStyle(view === "sync")}>
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={view === "sync" ? "#fff" : "#888"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -168,7 +297,73 @@ export default function Dashboard({ onLogout }: DashboardProps) {
             <div style={{ flexGrow: 1, padding: "40px", overflowY: "auto" }}>
                 {view === "home" && (
                     <>
-                        <h1>My Vault</h1>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
+                            <h1 style={{ margin: 0 }}>My Vault</h1>
+                            {/* Profile Selector */}
+                            <div style={{ position: "relative" }}>
+                                <button
+                                    onClick={() => setShowProfileDropdown(!showProfileDropdown)}
+                                    style={{
+                                        background: "#252525",
+                                        border: "1px solid #333",
+                                        borderRadius: "6px",
+                                        color: "white",
+                                        padding: "8px 16px",
+                                        cursor: "pointer",
+                                        display: "flex",
+                                        alignItems: "center",
+                                        gap: "8px",
+                                        fontSize: "14px"
+                                    }}
+                                >
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8A2BE2" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                                        <circle cx="12" cy="7" r="4"/>
+                                    </svg>
+                                    {activeProfile?.name || "Select Profile"}
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#888" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M6 9l6 6 6-6"/>
+                                    </svg>
+                                </button>
+                                {showProfileDropdown && (
+                                    <div style={{
+                                        position: "absolute",
+                                        top: "100%",
+                                        right: 0,
+                                        marginTop: "4px",
+                                        background: "#252525",
+                                        border: "1px solid #333",
+                                        borderRadius: "6px",
+                                        minWidth: "180px",
+                                        zIndex: 100,
+                                        boxShadow: "0 4px 12px rgba(0,0,0,0.3)"
+                                    }}>
+                                        {profiles.map(profile => (
+                                            <button
+                                                key={profile.id}
+                                                onClick={() => handleProfileSwitch(profile)}
+                                                style={{
+                                                    display: "block",
+                                                    width: "100%",
+                                                    padding: "10px 16px",
+                                                    background: profile.id === activeProfile?.id ? "rgba(138, 43, 226, 0.2)" : "transparent",
+                                                    border: "none",
+                                                    color: "white",
+                                                    textAlign: "left",
+                                                    cursor: "pointer",
+                                                    fontSize: "14px"
+                                                }}
+                                            >
+                                                {profile.name}
+                                                <span style={{ color: "#555", marginLeft: "8px", fontSize: "12px" }}>
+                                                    ({profile.entryCount})
+                                                </span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
                         <input placeholder="Search..." style={inputStyle} />
                         {entries.map(e => (
                             <div
@@ -211,6 +406,36 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                                 <div style={{ marginBottom: "8px" }}>
                                     <label style={{ color: "#888", fontSize: "12px", display: "block", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Site Name</label>
                                     <input value={currentEntry.uuid} onChange={e => setCurrentEntry({ ...currentEntry, uuid: e.target.value })} style={inputStyle} autoFocus />
+                                </div>
+                                <div style={{ marginBottom: "8px" }}>
+                                    <label style={{ color: "#888", fontSize: "12px", display: "block", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Save to Profile</label>
+                                    <select
+                                        value={saveToProfileId || activeProfile?.id || ""}
+                                        onChange={e => setSaveToProfileId(Number(e.target.value))}
+                                        style={{
+                                            width: "100%",
+                                            padding: "12px",
+                                            backgroundColor: "#333",
+                                            border: "1px solid #444",
+                                            color: "#fff",
+                                            borderRadius: "6px",
+                                            marginBottom: "15px",
+                                            boxSizing: "border-box" as const,
+                                            cursor: "pointer",
+                                            fontSize: "14px",
+                                            appearance: "none",
+                                            WebkitAppearance: "none",
+                                            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")`,
+                                            backgroundRepeat: "no-repeat",
+                                            backgroundPosition: "right 12px center"
+                                        }}
+                                    >
+                                        {profiles.map(profile => (
+                                            <option key={profile.id} value={profile.id} style={{ backgroundColor: "#333", color: "#fff" }}>
+                                                {profile.name} ({profile.entryCount} entries)
+                                            </option>
+                                        ))}
+                                    </select>
                                 </div>
                             </>
                         ) : (
@@ -281,6 +506,16 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                         </div>
 
                         <button type="submit" style={{ width: "100%", padding: "15px", background: "#8A2BE2", color: "white", border: "none", borderRadius: "8px", fontWeight: "bold", fontSize: "16px", cursor: "pointer" }}>Save</button>
+
+                        {view === "detail" && currentEntry.id && (
+                            <button
+                                type="button"
+                                onClick={() => handleDeleteClick(currentEntry)}
+                                style={{ width: "100%", padding: "15px", background: "transparent", color: "#ff4444", border: "1px solid #ff4444", borderRadius: "8px", fontWeight: "bold", fontSize: "16px", cursor: "pointer", marginTop: "15px" }}
+                            >
+                                Delete Entry
+                            </button>
+                        )}
                     </form>
                 )}
 
@@ -299,7 +534,191 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                         <p style={{ color: "#888" }}>Sync functionality coming soon.</p>
                     </div>
                 )}
+
+                {view === "profiles" && (
+                    <div style={{ maxWidth: "500px" }}>
+                        <button
+                            onClick={() => setView("home")}
+                            style={{ background: "none", border: "none", color: "#888", cursor: "pointer", padding: "0", marginBottom: "20px", display: "flex", alignItems: "center", gap: "6px", fontSize: "14px" }}
+                        >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#888" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M19 12H5M12 19l-7-7 7-7"/>
+                            </svg>
+                            Back
+                        </button>
+                        <h2 style={{ marginTop: "0" }}>Manage Profiles</h2>
+
+                        {/* Create New Profile */}
+                        <div style={{ marginBottom: "30px" }}>
+                            <label style={{ color: "#888", fontSize: "12px", display: "block", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Create New Profile</label>
+                            <div style={{ display: "flex", gap: "10px" }}>
+                                <input
+                                    value={newProfileName}
+                                    onChange={e => setNewProfileName(e.target.value)}
+                                    placeholder="Profile name..."
+                                    style={{ ...inputStyle, marginBottom: 0, flex: 1 }}
+                                    onKeyDown={e => e.key === "Enter" && handleCreateProfile()}
+                                />
+                                <button
+                                    onClick={handleCreateProfile}
+                                    style={{
+                                        padding: "12px 20px",
+                                        background: "#8A2BE2",
+                                        color: "white",
+                                        border: "none",
+                                        borderRadius: "6px",
+                                        cursor: "pointer",
+                                        fontWeight: "bold"
+                                    }}
+                                >
+                                    Create
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Profile List */}
+                        <label style={{ color: "#888", fontSize: "12px", display: "block", marginBottom: "12px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Your Profiles</label>
+                        {profiles.map(profile => (
+                            <div
+                                key={profile.id}
+                                style={{
+                                    padding: "15px",
+                                    background: profile.id === activeProfile?.id ? "rgba(138, 43, 226, 0.15)" : "#252525",
+                                    marginBottom: "10px",
+                                    borderRadius: "8px",
+                                    border: profile.id === activeProfile?.id ? "1px solid rgba(138, 43, 226, 0.4)" : "1px solid #333"
+                                }}
+                            >
+                                {editingProfileId === profile.id ? (
+                                    <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                                        <input
+                                            value={editingProfileName}
+                                            onChange={e => setEditingProfileName(e.target.value)}
+                                            style={{ ...inputStyle, marginBottom: 0, flex: 1 }}
+                                            autoFocus
+                                            onKeyDown={e => {
+                                                if (e.key === "Enter") handleRenameProfile(profile.id);
+                                                if (e.key === "Escape") { setEditingProfileId(null); setEditingProfileName(""); }
+                                            }}
+                                        />
+                                        <button
+                                            onClick={() => handleRenameProfile(profile.id)}
+                                            style={{ background: "#8A2BE2", border: "none", color: "white", padding: "8px 16px", borderRadius: "6px", cursor: "pointer" }}
+                                        >
+                                            Save
+                                        </button>
+                                        <button
+                                            onClick={() => { setEditingProfileId(null); setEditingProfileName(""); }}
+                                            style={{ background: "#333", border: "none", color: "white", padding: "8px 16px", borderRadius: "6px", cursor: "pointer" }}
+                                        >
+                                            Cancel
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                        <div>
+                                            <strong>{profile.name}</strong>
+                                            {profile.id === activeProfile?.id && (
+                                                <span style={{ marginLeft: "10px", fontSize: "12px", color: "#8A2BE2" }}>Active</span>
+                                            )}
+                                            <div style={{ color: "#555", fontSize: "12px", marginTop: "4px" }}>
+                                                {profile.entryCount} {profile.entryCount === 1 ? "entry" : "entries"}
+                                            </div>
+                                        </div>
+                                        <div style={{ display: "flex", gap: "8px" }}>
+                                            <button
+                                                onClick={() => { setEditingProfileId(profile.id); setEditingProfileName(profile.name); }}
+                                                style={{ background: "none", border: "none", color: "#888", cursor: "pointer", padding: "4px" }}
+                                                title="Rename"
+                                            >
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                                                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                                                </svg>
+                                            </button>
+                                            {profiles.length > 1 && profile.entryCount === 0 && (
+                                                <button
+                                                    onClick={() => handleDeleteProfile(profile)}
+                                                    style={{ background: "none", border: "none", color: "#ff4444", cursor: "pointer", padding: "4px" }}
+                                                    title="Delete"
+                                                >
+                                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                                        <polyline points="3 6 5 6 21 6"/>
+                                                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                                                    </svg>
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                )}
             </div>
+
+            {/* Delete Confirmation Modal */}
+            {showDeleteModal && (
+                <div style={{
+                    position: "fixed",
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    background: "rgba(0, 0, 0, 0.7)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    zIndex: 1000
+                }}>
+                    <div style={{
+                        background: "#252525",
+                        borderRadius: "12px",
+                        padding: "30px",
+                        maxWidth: "400px",
+                        width: "90%",
+                        border: "1px solid #333"
+                    }}>
+                        <h3 style={{ marginTop: 0, marginBottom: "15px" }}>Delete Entry?</h3>
+                        <p style={{ color: "#888", marginBottom: "25px" }}>
+                            Are you sure you want to delete <strong style={{ color: "#fff" }}>{deleteTargetEntry?.uuid}</strong>? This action cannot be undone.
+                        </p>
+                        <div style={{ display: "flex", gap: "10px" }}>
+                            <button
+                                onClick={() => { setShowDeleteModal(false); setDeleteTargetEntry(null); }}
+                                style={{
+                                    flex: 1,
+                                    padding: "12px",
+                                    background: "#333",
+                                    color: "white",
+                                    border: "none",
+                                    borderRadius: "6px",
+                                    cursor: "pointer",
+                                    fontSize: "14px"
+                                }}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={handleDeleteConfirm}
+                                style={{
+                                    flex: 1,
+                                    padding: "12px",
+                                    background: "#ff4444",
+                                    color: "white",
+                                    border: "none",
+                                    borderRadius: "6px",
+                                    cursor: "pointer",
+                                    fontSize: "14px",
+                                    fontWeight: "bold"
+                                }}
+                            >
+                                Delete
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
