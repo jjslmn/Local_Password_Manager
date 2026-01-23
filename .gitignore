@@ -30,5 +30,10 @@ npm-debug.log*
 *.db
 *.db-journal
 
-# Claude Code
+# Claude Code & personal workflow
 .claude/
+CLAUDE.md
+
+# Ralph workflow (personal dev notes/ideas)
+ralph/
+RALPH_LOOP_MASTER_PROMPT_V2.md

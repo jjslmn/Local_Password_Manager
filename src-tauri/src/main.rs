@@ -142,11 +142,11 @@ fn register_user(state: State<AppState>, username: String, pass: String) -> Resu
         .map_err(|e| e.to_string())?
         .to_string();
 
-    // 3. Save User
+    // 3. Save User (generic error to prevent username enumeration)
     db.conn.execute(
         "INSERT INTO users (username, password_hash, salt) VALUES (?1, ?2, ?3)",
         params![username, password_hash, salt_str],
-    ).map_err(|e| e.to_string())?;
+    ).map_err(|_| "Registration failed")?;
 
     Ok("User registered".to_string())
 }
@@ -156,15 +156,16 @@ fn unlock_vault(state: State<AppState>, username: String, pass: String) -> Resul
     let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
     let db = db_guard.as_ref().ok_or("DB not init")?;
 
+    // Use generic error message to prevent username enumeration
     let hash: String = db.conn.query_row(
         "SELECT password_hash FROM users WHERE username = ?1",
         params![username],
         |row| row.get(0),
-    ).map_err(|_| "User not found")?;
+    ).map_err(|_| "Invalid username or password")?;
 
-    let parsed_hash = PasswordHash::new(&hash).map_err(|_| "Hash error")?;
+    let parsed_hash = PasswordHash::new(&hash).map_err(|_| "Invalid username or password")?;
     Argon2::default().verify_password(pass.as_bytes(), &parsed_hash)
-        .map_err(|_| "Invalid Password")?;
+        .map_err(|_| "Invalid username or password")?;
 
     Ok("Unlocked".to_string())
 }
@@ -200,17 +201,15 @@ fn get_all_vault_entries(state: State<AppState>) -> Result<Vec<serde_json::Value
 }
 
 #[tauri::command]
-fn save_entry(state: State<AppState>, uuid: String, blob: Vec<u8>, nonce: Vec<u8>, profile_id: Option<i64>) -> Result<String, String> {
-    let target_profile = match profile_id {
-        Some(id) => id,
-        None => *state.active_profile_id.lock().map_err(|_| "Lock failed")?
-    };
+fn save_entry(state: State<AppState>, uuid: String, blob: Vec<u8>, nonce: Vec<u8>) -> Result<String, String> {
+    // Always use active profile - prevents unauthorized cross-profile access
+    let active_profile = *state.active_profile_id.lock().map_err(|_| "Lock failed")?;
     let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
     let db = db_guard.as_ref().ok_or("DB not init")?;
 
     db.conn.execute(
         "INSERT INTO vault_entries (uuid, data_blob, nonce, profile_id) VALUES (?1, ?2, ?3, ?4)",
-        params![uuid, blob, nonce, target_profile],
+        params![uuid, blob, nonce, active_profile],
     ).map_err(|e| e.to_string())?;
 
     Ok("Saved".to_string())
