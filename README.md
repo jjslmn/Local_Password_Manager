@@ -13,7 +13,7 @@ A secure, offline-first password manager built with Tauri 2.0. Store your creden
 
 ### Pre-built Releases
 
-Download the latest release for your platform from the [Releases](https://github.com/yourusername/vibevault/releases) page:
+Download the latest release for your platform from the [Releases](https://github.com/jjslmn/Local_Password_Manager/releases) page:
 
 | Platform | Download | Install Method |
 |----------|----------|----------------|
@@ -49,8 +49,8 @@ sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/jjslmn/vibevault.git
-   cd vibevault
+   git clone https://github.com/jjslmn/Local_Password_Manager.git
+   cd Local_Password_Manager
    ```
 
 2. Install dependencies:
@@ -113,6 +113,18 @@ vibevault/
 │   └── Cargo.toml         # Rust dependencies
 └── package.json           # Node.js dependencies
 ```
+
+## Releases
+
+Releases are automated via GitHub Actions. To create a new release:
+
+1. Commit your changes and push to `master`
+2. Create and push a version tag:
+   ```bash
+   git tag v1.0.2
+   git push origin v1.0.2
+   ```
+3. GitHub Actions will build for Ubuntu and Windows, then publish to the [Releases](https://github.com/jjslmn/Local_Password_Manager/releases) page
 
 ## License
 
