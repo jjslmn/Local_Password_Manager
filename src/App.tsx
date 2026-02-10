@@ -5,6 +5,7 @@ import Dashboard from "./components/Dashboard";
 function App() {
     const [isRegistered, setIsRegistered] = useState(false);
     const [isAuthenticated, setIsAuthenticated] = useState(false);
+    const [sessionToken, setSessionToken] = useState("");
     const [username, setUsername] = useState("");
     const [password, setPassword] = useState("");
     const [error, setError] = useState("");
@@ -39,7 +40,8 @@ function App() {
 
     async function handleLogin() {
         try {
-            await invoke("unlock_vault", { username, pass: password });
+            const token = await invoke<string>("unlock_vault", { username, pass: password });
+            setSessionToken(token);
             setIsAuthenticated(true);
             setError("");
         } catch (e) {
@@ -47,14 +49,20 @@ function App() {
         }
     }
 
-    function handleLogout() {
+    async function handleLogout() {
+        try {
+            await invoke("lock_vault");
+        } catch {
+            // Best-effort lock; clear frontend state regardless
+        }
+        setSessionToken("");
         setIsAuthenticated(false);
         setUsername("");
         setPassword("");
     }
 
     if (isAuthenticated) {
-        return <Dashboard onLogout={handleLogout} />;
+        return <Dashboard onLogout={handleLogout} sessionToken={sessionToken} />;
     }
 
     return (

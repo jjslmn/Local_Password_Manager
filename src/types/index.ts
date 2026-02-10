@@ -16,6 +16,7 @@ export interface Profile {
 
 export interface DashboardProps {
     onLogout: () => void;
+    sessionToken: string;
 }
 
 /** Raw vault entry as returned by the Rust backend (before JSON parsing) */

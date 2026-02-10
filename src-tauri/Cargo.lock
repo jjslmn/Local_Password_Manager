@@ -3824,23 +3824,9 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
  "pin-project-lite",
- "signal-hook-registry",
  "socket2",
- "tokio-macros",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "tokio-macros"
-version = "2.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af407857209536a95c8e56f8231ef2c2e2aff839b22e07a1ffcbc617e9db9fa5"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.113",
 ]
 
 [[package]]
@@ -4201,25 +4187,22 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vibevault"
-version = "1.0.0"
+version = "1.0.3"
 dependencies = [
  "aes-gcm",
  "argon2",
  "base32 0.4.0",
  "base64 0.21.7",
  "chrono",
- "hmac",
+ "hex",
  "rand 0.8.5",
  "rusqlite",
  "serde",
  "serde_json",
- "sha1",
  "tauri",
  "tauri-build",
  "tauri-plugin-shell",
- "tokio",
  "totp-rs",
- "uuid",
 ]
 
 [[package]]

@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { VaultEntry, Profile, DashboardProps, RawVaultEntry } from "../types";
 
-export default function Dashboard({ onLogout }: DashboardProps) {
+export default function Dashboard({ onLogout, sessionToken }: DashboardProps) {
     const [view, setView] = useState<"home" | "add" | "detail" | "sync" | "profiles">("home");
     const [entries, setEntries] = useState<VaultEntry[]>([]);
     const [currentEntry, setCurrentEntry] = useState<VaultEntry>({ uuid: "" });
@@ -53,13 +53,13 @@ export default function Dashboard({ onLogout }: DashboardProps) {
 
     async function loadProfiles() {
         try {
-            const profileList = await invoke<Profile[]>("get_all_profiles");
+            const profileList = await invoke<Profile[]>("get_all_profiles", { token: sessionToken });
             setProfiles(profileList);
-            const activeId = await invoke<number>("get_active_profile");
+            const activeId = await invoke<number>("get_active_profile", { token: sessionToken });
             const active = profileList.find(p => p.id === activeId) || profileList[0];
             setActiveProfile(active);
             if (active) {
-                await invoke("set_active_profile", { id: active.id });
+                await invoke("set_active_profile", { id: active.id, token: sessionToken });
                 refreshVault();
             }
         } catch {
@@ -69,7 +69,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
 
     async function handleProfileSwitch(profile: Profile) {
         try {
-            await invoke("set_active_profile", { id: profile.id });
+            await invoke("set_active_profile", { id: profile.id, token: sessionToken });
             setActiveProfile(profile);
             setShowProfileDropdown(false);
             await refreshVault();
@@ -84,7 +84,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
             return;
         }
         try {
-            await invoke("create_profile", { name: newProfileName.trim() });
+            await invoke("create_profile", { name: newProfileName.trim(), token: sessionToken });
             setNewProfileName("");
             await loadProfiles();
         } catch (e) {
@@ -98,7 +98,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
             return;
         }
         try {
-            await invoke("rename_profile", { id, name: editingProfileName.trim() });
+            await invoke("rename_profile", { id, name: editingProfileName.trim(), token: sessionToken });
             setEditingProfileId(null);
             setEditingProfileName("");
             await loadProfiles();
@@ -120,7 +120,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
             return;
         }
         try {
-            await invoke("delete_profile", { id: profile.id });
+            await invoke("delete_profile", { id: profile.id, token: sessionToken });
             if (activeProfile?.id === profile.id) {
                 const remaining = profiles.filter(p => p.id !== profile.id);
                 if (remaining.length > 0) {
@@ -135,7 +135,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
 
     async function refreshVault() {
         try {
-            const rawData = await invoke<RawVaultEntry[]>("get_all_vault_entries");
+            const rawData = await invoke<RawVaultEntry[]>("get_all_vault_entries", { token: sessionToken });
             const parsed = rawData.map((e) => {
                 try {
                     const jsonString = String.fromCharCode(...e.data_blob);
@@ -146,8 +146,11 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                 }
             });
             setEntries(parsed);
-        } catch {
-            // Failed to load vault entries
+        } catch (e) {
+            // Session expired — force logout
+            if (String(e).includes("Session expired")) {
+                onLogout();
+            }
         }
     }
 
@@ -189,11 +192,11 @@ export default function Dashboard({ onLogout }: DashboardProps) {
             const savedUuid = currentEntry.uuid;
 
             if (currentEntry.id) {
-                await invoke("update_entry", { id: currentEntry.id, uuid: currentEntry.uuid, blob, nonce: [] });
+                await invoke("update_entry", { id: currentEntry.id, uuid: currentEntry.uuid, blob, token: sessionToken });
             } else {
                 // Pass profileId if a specific profile was selected, otherwise use active profile
                 const profile_id = saveToProfileId || activeProfile?.id || null;
-                await invoke("save_entry", { uuid: currentEntry.uuid, blob, nonce: [], profile_id });
+                await invoke("save_entry", { uuid: currentEntry.uuid, blob, profile_id, token: sessionToken });
             }
 
             await refreshVault();
@@ -219,7 +222,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
     async function handleDeleteConfirm() {
         if (!deleteTargetEntry?.id) return;
         try {
-            await invoke("delete_entry", { id: deleteTargetEntry.id });
+            await invoke("delete_entry", { id: deleteTargetEntry.id, token: sessionToken });
             await refreshVault();
             setShowDeleteModal(false);
             setDeleteTargetEntry(null);

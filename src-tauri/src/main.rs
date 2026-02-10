@@ -10,6 +10,10 @@ use argon2::{
 };
 use rand::RngCore;
 use base64::{Engine as _, engine::general_purpose};
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
 
 // --- DATABASE MANAGER ---
 struct DatabaseManager {
@@ -33,6 +37,20 @@ impl DatabaseManager {
             )",
             [],
         ).expect("Failed to create users table");
+
+        // 1b. Migration: Add encryption_salt column if missing
+        let has_enc_salt: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('users') WHERE name='encryption_salt'",
+            [],
+            |row| row.get::<_, i64>(0).map(|c| c > 0),
+        ).unwrap_or(false);
+
+        if !has_enc_salt {
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN encryption_salt TEXT NOT NULL DEFAULT ''",
+                [],
+            ).expect("Failed to add encryption_salt column");
+        }
 
         // 2. Create Profiles Table
         conn.execute(
@@ -102,10 +120,86 @@ impl DatabaseManager {
     }
 }
 
+// --- SESSION STATE ---
+struct SessionState {
+    token: String,
+    encryption_key: [u8; 32],
+}
+
 // --- APP STATE ---
 struct AppState {
     db: Arc<Mutex<Option<DatabaseManager>>>,
     active_profile_id: Arc<Mutex<i64>>,
+    session: Arc<Mutex<Option<SessionState>>>,
+}
+
+// --- HELPERS ---
+
+/// Validate session token and return the encryption key
+fn validate_session(state: &State<AppState>, token: &str) -> Result<[u8; 32], String> {
+    let session_guard = state.session.lock().map_err(|_| "Lock failed")?;
+    let session = session_guard.as_ref().ok_or("Session expired. Please log in again.")?;
+
+    // Constant-time comparison to prevent timing attacks
+    if token.len() != session.token.len() {
+        return Err("Session expired. Please log in again.".to_string());
+    }
+    let mut diff = 0u8;
+    for (a, b) in token.bytes().zip(session.token.bytes()) {
+        diff |= a ^ b;
+    }
+    if diff != 0 {
+        return Err("Session expired. Please log in again.".to_string());
+    }
+
+    Ok(session.encryption_key)
+}
+
+/// Encrypt data with AES-256-GCM, returns (ciphertext, nonce)
+fn encrypt_blob(key: &[u8; 32], plaintext: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|_| "Encryption init failed")?;
+    let mut nonce_bytes = [0u8; 12];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher.encrypt(nonce, plaintext)
+        .map_err(|_| "Encryption failed")?;
+    Ok((ciphertext, nonce_bytes.to_vec()))
+}
+
+/// Decrypt data with AES-256-GCM
+fn decrypt_blob(key: &[u8; 32], ciphertext: &[u8], nonce_bytes: &[u8]) -> Result<Vec<u8>, String> {
+    if nonce_bytes.len() != 12 {
+        return Err("Invalid nonce length".to_string());
+    }
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|_| "Decryption init failed")?;
+    let nonce = Nonce::from_slice(nonce_bytes);
+    cipher.decrypt(nonce, ciphertext)
+        .map_err(|_| "Decryption failed — wrong password or corrupted data".to_string())
+}
+
+/// Migrate plaintext entries to encrypted (called after unlock)
+fn migrate_plaintext_entries(db: &DatabaseManager, key: &[u8; 32]) -> Result<(), String> {
+    let mut stmt = db.conn.prepare(
+        "SELECT id, data_blob, nonce FROM vault_entries WHERE length(nonce) = 0"
+    ).map_err(|e| e.to_string())?;
+
+    let rows: Vec<(i64, Vec<u8>, Vec<u8>)> = stmt.query_map([], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    }).map_err(|e| e.to_string())?
+    .filter_map(|r| r.ok())
+    .collect();
+
+    for (id, plaintext_blob, _nonce) in rows {
+        let (ciphertext, new_nonce) = encrypt_blob(key, &plaintext_blob)?;
+        db.conn.execute(
+            "UPDATE vault_entries SET data_blob = ?1, nonce = ?2 WHERE id = ?3",
+            params![ciphertext, new_nonce, id],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
 }
 
 // --- USER MANAGEMENT COMMANDS ---
@@ -114,7 +208,7 @@ struct AppState {
 fn check_registration_status(state: State<AppState>) -> Result<bool, String> {
     let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
     let db = db_guard.as_ref().ok_or("DB not init")?;
-    
+
     // Check if any user exists
     let count: i64 = db.conn.query_row(
         "SELECT COUNT(*) FROM users",
@@ -130,11 +224,11 @@ fn register_user(state: State<AppState>, username: String, pass: String) -> Resu
     let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
     let db = db_guard.as_ref().ok_or("DB not init")?;
 
-    // 1. Generate clean salt
+    // 1. Generate clean salt for password hashing
     let mut salt_bytes = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut salt_bytes);
     let salt_str = general_purpose::STANDARD.encode(salt_bytes).replace("=", "");
-    
+
     // 2. Hash Password
     let salt = SaltString::from_b64(&salt_str).map_err(|_| "Salt Error")?;
     let argon2 = Argon2::default();
@@ -142,10 +236,15 @@ fn register_user(state: State<AppState>, username: String, pass: String) -> Resu
         .map_err(|e| e.to_string())?
         .to_string();
 
-    // 3. Save User (generic error to prevent username enumeration)
+    // 3. Generate encryption salt (separate from auth salt)
+    let mut enc_salt_bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut enc_salt_bytes);
+    let enc_salt_hex = hex::encode(enc_salt_bytes);
+
+    // 4. Save User
     db.conn.execute(
-        "INSERT INTO users (username, password_hash, salt) VALUES (?1, ?2, ?3)",
-        params![username, password_hash, salt_str],
+        "INSERT INTO users (username, password_hash, salt, encryption_salt) VALUES (?1, ?2, ?3, ?4)",
+        params![username, password_hash, salt_str, enc_salt_hex],
     ).map_err(|_| "Registration failed")?;
 
     Ok("User registered".to_string())
@@ -157,74 +256,143 @@ fn unlock_vault(state: State<AppState>, username: String, pass: String) -> Resul
     let db = db_guard.as_ref().ok_or("DB not init")?;
 
     // Use generic error message to prevent username enumeration
-    let hash: String = db.conn.query_row(
-        "SELECT password_hash FROM users WHERE username = ?1",
+    let (hash, enc_salt_hex): (String, String) = db.conn.query_row(
+        "SELECT password_hash, encryption_salt FROM users WHERE username = ?1",
         params![username],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get::<_, String>(1)?)),
     ).map_err(|_| "Invalid username or password")?;
 
     let parsed_hash = PasswordHash::new(&hash).map_err(|_| "Invalid username or password")?;
     Argon2::default().verify_password(pass.as_bytes(), &parsed_hash)
         .map_err(|_| "Invalid username or password")?;
 
-    Ok("Unlocked".to_string())
+    // Handle existing users who don't have an encryption_salt yet
+    let enc_salt_hex = if enc_salt_hex.is_empty() {
+        let mut enc_salt_bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut enc_salt_bytes);
+        let new_hex = hex::encode(enc_salt_bytes);
+        db.conn.execute(
+            "UPDATE users SET encryption_salt = ?1 WHERE username = ?2",
+            params![new_hex, username],
+        ).map_err(|e| e.to_string())?;
+        new_hex
+    } else {
+        enc_salt_hex
+    };
+
+    // Derive encryption key from password + encryption_salt using Argon2id
+    let enc_salt_bytes = hex::decode(&enc_salt_hex)
+        .map_err(|_| "Invalid encryption salt")?;
+    let mut encryption_key = [0u8; 32];
+    Argon2::default()
+        .hash_password_into(pass.as_bytes(), &enc_salt_bytes, &mut encryption_key)
+        .map_err(|e| format!("Key derivation failed: {}", e))?;
+
+    // Generate session token
+    let mut token_bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut token_bytes);
+    let session_token = hex::encode(token_bytes);
+
+    // Migrate any plaintext entries before storing session
+    migrate_plaintext_entries(db, &encryption_key)?;
+
+    // Store session
+    drop(db_guard); // Release DB lock before acquiring session lock
+    let mut session_guard = state.session.lock().map_err(|_| "Lock failed")?;
+    *session_guard = Some(SessionState {
+        token: session_token.clone(),
+        encryption_key,
+    });
+
+    Ok(session_token)
+}
+
+#[tauri::command]
+fn lock_vault(state: State<AppState>) -> Result<String, String> {
+    // Clear session (fail-safe: no token required)
+    let mut session_guard = state.session.lock().map_err(|_| "Lock failed")?;
+    *session_guard = None;
+    drop(session_guard);
+
+    // Reset active profile to default
+    let mut active_id = state.active_profile_id.lock().map_err(|_| "Lock failed")?;
+    *active_id = 1;
+
+    Ok("Locked".to_string())
 }
 
 // --- VAULT COMMANDS ---
 
 #[tauri::command]
-fn get_all_vault_entries(state: State<AppState>) -> Result<Vec<serde_json::Value>, String> {
+fn get_all_vault_entries(state: State<AppState>, token: String) -> Result<Vec<serde_json::Value>, String> {
+    let key = validate_session(&state, &token)?;
     let active_profile = *state.active_profile_id.lock().map_err(|_| "Lock failed")?;
     let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
     let db = db_guard.as_ref().ok_or("DB not init")?;
 
     let mut stmt = db.conn.prepare(
-        "SELECT id, uuid, data_blob FROM vault_entries WHERE profile_id = ?1"
+        "SELECT id, uuid, data_blob, nonce FROM vault_entries WHERE profile_id = ?1"
     ).map_err(|e| e.to_string())?;
 
     let rows = stmt.query_map(params![active_profile], |row| {
         let id: i64 = row.get(0)?;
         let uuid: String = row.get(1)?;
         let blob: Vec<u8> = row.get(2)?;
-        Ok(serde_json::json!({
-            "id": id,
-            "uuid": uuid,
-            "data_blob": blob
-        }))
+        let nonce: Vec<u8> = row.get(3)?;
+        Ok((id, uuid, blob, nonce))
     }).map_err(|e| e.to_string())?;
 
     let mut entries = Vec::new();
     for row in rows {
-        entries.push(row.map_err(|e| e.to_string())?);
+        let (id, uuid, blob, nonce) = row.map_err(|e| e.to_string())?;
+
+        // Decrypt: empty nonce = legacy plaintext fallback
+        let plaintext = if nonce.is_empty() {
+            blob
+        } else {
+            decrypt_blob(&key, &blob, &nonce)?
+        };
+
+        entries.push(serde_json::json!({
+            "id": id,
+            "uuid": uuid,
+            "data_blob": plaintext
+        }));
     }
     Ok(entries)
 }
 
 #[tauri::command]
-fn save_entry(state: State<AppState>, uuid: String, blob: Vec<u8>, nonce: Vec<u8>, profile_id: Option<i64>) -> Result<String, String> {
+fn save_entry(state: State<AppState>, token: String, uuid: String, blob: Vec<u8>, profile_id: Option<i64>) -> Result<String, String> {
+    let key = validate_session(&state, &token)?;
     let active_profile = *state.active_profile_id.lock().map_err(|_| "Lock failed")?;
     let target_profile = profile_id.unwrap_or(active_profile);
     let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
     let db = db_guard.as_ref().ok_or("DB not init")?;
 
+    let (ciphertext, nonce) = encrypt_blob(&key, &blob)?;
+
     db.conn.execute(
         "INSERT INTO vault_entries (uuid, data_blob, nonce, profile_id) VALUES (?1, ?2, ?3, ?4)",
-        params![uuid, blob, nonce, target_profile],
+        params![uuid, ciphertext, nonce, target_profile],
     ).map_err(|e| e.to_string())?;
 
     Ok("Saved".to_string())
 }
 
 #[tauri::command]
-fn update_entry(state: State<AppState>, id: i64, uuid: String, blob: Vec<u8>, nonce: Vec<u8>) -> Result<String, String> {
+fn update_entry(state: State<AppState>, token: String, id: i64, uuid: String, blob: Vec<u8>) -> Result<String, String> {
+    let key = validate_session(&state, &token)?;
     let active_profile = *state.active_profile_id.lock().map_err(|_| "Lock failed")?;
     let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
     let db = db_guard.as_ref().ok_or("DB not init")?;
 
+    let (ciphertext, nonce) = encrypt_blob(&key, &blob)?;
+
     // Validate entry belongs to active profile
     let rows_updated = db.conn.execute(
         "UPDATE vault_entries SET uuid = ?1, data_blob = ?2, nonce = ?3 WHERE id = ?4 AND profile_id = ?5",
-        params![uuid, blob, nonce, id, active_profile],
+        params![uuid, ciphertext, nonce, id, active_profile],
     ).map_err(|e| e.to_string())?;
 
     if rows_updated == 0 {
@@ -235,7 +403,8 @@ fn update_entry(state: State<AppState>, id: i64, uuid: String, blob: Vec<u8>, no
 }
 
 #[tauri::command]
-fn delete_entry(state: State<AppState>, id: i64) -> Result<String, String> {
+fn delete_entry(state: State<AppState>, token: String, id: i64) -> Result<String, String> {
+    validate_session(&state, &token)?;
     let active_profile = *state.active_profile_id.lock().map_err(|_| "Lock failed")?;
     let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
     let db = db_guard.as_ref().ok_or("DB not init")?;
@@ -256,7 +425,8 @@ fn delete_entry(state: State<AppState>, id: i64) -> Result<String, String> {
 // --- PROFILE COMMANDS ---
 
 #[tauri::command]
-fn create_profile(state: State<AppState>, name: String) -> Result<i64, String> {
+fn create_profile(state: State<AppState>, token: String, name: String) -> Result<i64, String> {
+    validate_session(&state, &token)?;
     let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
     let db = db_guard.as_ref().ok_or("DB not init")?;
 
@@ -270,7 +440,8 @@ fn create_profile(state: State<AppState>, name: String) -> Result<i64, String> {
 }
 
 #[tauri::command]
-fn get_all_profiles(state: State<AppState>) -> Result<Vec<serde_json::Value>, String> {
+fn get_all_profiles(state: State<AppState>, token: String) -> Result<Vec<serde_json::Value>, String> {
+    validate_session(&state, &token)?;
     let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
     let db = db_guard.as_ref().ok_or("DB not init")?;
 
@@ -303,7 +474,8 @@ fn get_all_profiles(state: State<AppState>) -> Result<Vec<serde_json::Value>, St
 }
 
 #[tauri::command]
-fn rename_profile(state: State<AppState>, id: i64, name: String) -> Result<String, String> {
+fn rename_profile(state: State<AppState>, token: String, id: i64, name: String) -> Result<String, String> {
+    validate_session(&state, &token)?;
     let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
     let db = db_guard.as_ref().ok_or("DB not init")?;
 
@@ -316,7 +488,8 @@ fn rename_profile(state: State<AppState>, id: i64, name: String) -> Result<Strin
 }
 
 #[tauri::command]
-fn delete_profile(state: State<AppState>, id: i64) -> Result<String, String> {
+fn delete_profile(state: State<AppState>, token: String, id: i64) -> Result<String, String> {
+    validate_session(&state, &token)?;
     let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
     let db = db_guard.as_ref().ok_or("DB not init")?;
 
@@ -351,13 +524,15 @@ fn delete_profile(state: State<AppState>, id: i64) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn get_active_profile(state: State<AppState>) -> Result<i64, String> {
+fn get_active_profile(state: State<AppState>, token: String) -> Result<i64, String> {
+    validate_session(&state, &token)?;
     let active_id = state.active_profile_id.lock().map_err(|_| "Lock failed")?;
     Ok(*active_id)
 }
 
 #[tauri::command]
-fn set_active_profile(state: State<AppState>, id: i64) -> Result<String, String> {
+fn set_active_profile(state: State<AppState>, token: String, id: i64) -> Result<String, String> {
+    validate_session(&state, &token)?;
     let mut active_id = state.active_profile_id.lock().map_err(|_| "Lock failed")?;
     *active_id = id;
     Ok("Active profile set".to_string())
@@ -379,6 +554,7 @@ fn main() {
     let app_state = AppState {
         db: Arc::new(Mutex::new(None)),
         active_profile_id: Arc::new(Mutex::new(1)), // Default to profile 1 (Personal)
+        session: Arc::new(Mutex::new(None)),
     };
 
     tauri::Builder::default()
@@ -394,6 +570,7 @@ fn main() {
             check_registration_status,
             register_user,
             unlock_vault,
+            lock_vault,
             save_entry,
             update_entry,
             delete_entry,
