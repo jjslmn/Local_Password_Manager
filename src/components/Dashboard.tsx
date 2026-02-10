@@ -1,25 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-
-interface VaultEntry {
-    id?: number;
-    uuid: string;
-    username?: string;
-    password?: string;
-    totpSecret?: string;
-    notes?: string;
-}
-
-interface Profile {
-    id: number;
-    name: string;
-    createdAt: string;
-    entryCount: number;
-}
-
-interface DashboardProps {
-    onLogout: () => void;
-}
+import type { VaultEntry, Profile, DashboardProps, RawVaultEntry } from "../types";
 
 export default function Dashboard({ onLogout }: DashboardProps) {
     const [view, setView] = useState<"home" | "add" | "detail" | "sync" | "profiles">("home");
@@ -53,7 +34,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
 
     // TOTP Timer Logic
     useEffect(() => {
-        let interval: any;
+        let interval: ReturnType<typeof setInterval> | undefined;
         if (view === "detail" && currentEntry.totpSecret) {
             const fetchCode = () => {
                 invoke<string>("get_totp_token", { secret: currentEntry.totpSecret })
@@ -154,8 +135,8 @@ export default function Dashboard({ onLogout }: DashboardProps) {
 
     async function refreshVault() {
         try {
-            const rawData = await invoke<any[]>("get_all_vault_entries");
-            const parsed = rawData.map((e: any) => {
+            const rawData = await invoke<RawVaultEntry[]>("get_all_vault_entries");
+            const parsed = rawData.map((e) => {
                 try {
                     const jsonString = String.fromCharCode(...e.data_blob);
                     const data = JSON.parse(jsonString);
@@ -211,8 +192,8 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                 await invoke("update_entry", { id: currentEntry.id, uuid: currentEntry.uuid, blob, nonce: [] });
             } else {
                 // Pass profileId if a specific profile was selected, otherwise use active profile
-                const profileId = saveToProfileId || activeProfile?.id || null;
-                await invoke("save_entry", { uuid: currentEntry.uuid, blob, nonce: [], profileId });
+                const profile_id = saveToProfileId || activeProfile?.id || null;
+                await invoke("save_entry", { uuid: currentEntry.uuid, blob, nonce: [], profile_id });
             }
 
             await refreshVault();

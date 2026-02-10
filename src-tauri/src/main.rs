@@ -201,15 +201,15 @@ fn get_all_vault_entries(state: State<AppState>) -> Result<Vec<serde_json::Value
 }
 
 #[tauri::command]
-fn save_entry(state: State<AppState>, uuid: String, blob: Vec<u8>, nonce: Vec<u8>) -> Result<String, String> {
-    // Always use active profile - prevents unauthorized cross-profile access
+fn save_entry(state: State<AppState>, uuid: String, blob: Vec<u8>, nonce: Vec<u8>, profile_id: Option<i64>) -> Result<String, String> {
     let active_profile = *state.active_profile_id.lock().map_err(|_| "Lock failed")?;
+    let target_profile = profile_id.unwrap_or(active_profile);
     let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
     let db = db_guard.as_ref().ok_or("DB not init")?;
 
     db.conn.execute(
         "INSERT INTO vault_entries (uuid, data_blob, nonce, profile_id) VALUES (?1, ?2, ?3, ?4)",
-        params![uuid, blob, nonce, active_profile],
+        params![uuid, blob, nonce, target_profile],
     ).map_err(|e| e.to_string())?;
 
     Ok("Saved".to_string())

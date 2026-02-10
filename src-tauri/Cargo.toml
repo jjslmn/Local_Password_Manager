@@ -1,6 +1,6 @@
 [package]
 name = "vibevault"
-version = "1.0.0"
+version = "1.0.3"
 description = "Secure offline password manager with strong encryption"
 authors = ["VibeVault Team"]
 edition = "2021"
@@ -15,19 +15,13 @@ tauri = { version = "2.0.0-rc", features = [] }
 tauri-plugin-shell = "2.0.0-rc"
 # Database
 rusqlite = { version = "0.30", features = ["bundled"] }
-# Async (Kept for Tauri commands, but DB is sync)
-tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Security
 argon2 = "0.5"
-aes-gcm = "0.10"
 rand = "0.8"
 base64 = "0.21"
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.0", features = ["v4", "serde"] }
-hmac = "0.12"
-sha1 = "0.10"
 base32 = "0.4"
 totp-rs = "5.0"
 

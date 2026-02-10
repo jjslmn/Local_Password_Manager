@@ -34,6 +34,9 @@ npm-debug.log*
 .claude/
 CLAUDE.md
 
-# Ralph workflow (personal dev notes/ideas)
-ralph/
-RALPH_LOOP_MASTER_PROMPT_V2.md
+# Claude development files
+claude_dev/
+.claude-private/
+
+# Project files (tools, data, assets)
+project_files/

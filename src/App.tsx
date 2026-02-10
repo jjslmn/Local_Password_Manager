@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Dashboard from "./components/Dashboard";
-import "./App.css";
 
 function App() {
     const [isRegistered, setIsRegistered] = useState(false);
