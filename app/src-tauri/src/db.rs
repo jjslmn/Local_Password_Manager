@@ -6,23 +6,25 @@ pub struct DatabaseManager {
 }
 
 impl DatabaseManager {
-    pub fn new(app_handle: &tauri::AppHandle) -> Self {
+    pub fn new(app_handle: &tauri::AppHandle) -> Result<Self, String> {
         use tauri::Manager;
         let app_dir = app_handle
             .path()
             .app_data_dir()
-            .expect("Failed to get app data dir");
-        std::fs::create_dir_all(&app_dir).expect("Failed to create app data dir");
+            .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+        std::fs::create_dir_all(&app_dir)
+            .map_err(|e| format!("Failed to create app data dir: {}", e))?;
         let db_path = app_dir.join("vibevault.db");
 
-        let conn = Connection::open(db_path).expect("Failed to open DB");
+        let conn =
+            Connection::open(db_path).map_err(|e| format!("Failed to open DB: {}", e))?;
 
-        Self::run_migrations(&conn);
+        Self::run_migrations(&conn)?;
 
-        DatabaseManager { conn }
+        Ok(DatabaseManager { conn })
     }
 
-    fn run_migrations(conn: &Connection) {
+    fn run_migrations(conn: &Connection) -> Result<(), String> {
         // 1. Create Users Table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS users (
@@ -32,7 +34,7 @@ impl DatabaseManager {
             )",
             [],
         )
-        .expect("Failed to create users table");
+        .map_err(|e| format!("Failed to create users table: {}", e))?;
 
         // 1b. Migration: Add encryption_salt column if missing
         if !Self::column_exists(conn, "users", "encryption_salt") {
@@ -40,7 +42,7 @@ impl DatabaseManager {
                 "ALTER TABLE users ADD COLUMN encryption_salt TEXT NOT NULL DEFAULT ''",
                 [],
             )
-            .expect("Failed to add encryption_salt column");
+            .map_err(|e| format!("Failed to add encryption_salt column: {}", e))?;
         }
 
         // 2. Create Profiles Table
@@ -52,7 +54,7 @@ impl DatabaseManager {
             )",
             [],
         )
-        .expect("Failed to create profiles table");
+        .map_err(|e| format!("Failed to create profiles table: {}", e))?;
 
         // 3. Insert default 'Personal' profile if profiles table is empty
         let profile_count: i64 = conn
@@ -61,7 +63,7 @@ impl DatabaseManager {
 
         if profile_count == 0 {
             conn.execute("INSERT INTO profiles (name) VALUES ('Personal')", [])
-                .expect("Failed to create default profile");
+                .map_err(|e| format!("Failed to create default profile: {}", e))?;
         }
 
         // 4. Create Vault Table (with profile_id if new, or migrate if existing)
@@ -90,7 +92,7 @@ impl DatabaseManager {
                 )",
                 [],
             )
-            .expect("Failed to create vault table");
+            .map_err(|e| format!("Failed to create vault table: {}", e))?;
         } else {
             // Migration: Add profile_id column if missing
             if !Self::column_exists(conn, "vault_entries", "profile_id") {
@@ -98,7 +100,7 @@ impl DatabaseManager {
                     "ALTER TABLE vault_entries ADD COLUMN profile_id INTEGER NOT NULL DEFAULT 1",
                     [],
                 )
-                .expect("Failed to add profile_id column");
+                .map_err(|e| format!("Failed to add profile_id column: {}", e))?;
             }
 
             // Migration: Add sync metadata columns
@@ -107,39 +109,39 @@ impl DatabaseManager {
                     "ALTER TABLE vault_entries ADD COLUMN entry_uuid TEXT",
                     [],
                 )
-                .expect("Failed to add entry_uuid column");
+                .map_err(|e| format!("Failed to add entry_uuid column: {}", e))?;
             }
             if !Self::column_exists(conn, "vault_entries", "created_at") {
                 conn.execute(
                     "ALTER TABLE vault_entries ADD COLUMN created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
                     [],
                 )
-                .expect("Failed to add created_at column");
+                .map_err(|e| format!("Failed to add created_at column: {}", e))?;
             }
             if !Self::column_exists(conn, "vault_entries", "updated_at") {
                 conn.execute(
                     "ALTER TABLE vault_entries ADD COLUMN updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
                     [],
                 )
-                .expect("Failed to add updated_at column");
+                .map_err(|e| format!("Failed to add updated_at column: {}", e))?;
             }
             if !Self::column_exists(conn, "vault_entries", "deleted_at") {
                 conn.execute(
                     "ALTER TABLE vault_entries ADD COLUMN deleted_at TEXT",
                     [],
                 )
-                .expect("Failed to add deleted_at column");
+                .map_err(|e| format!("Failed to add deleted_at column: {}", e))?;
             }
             if !Self::column_exists(conn, "vault_entries", "sync_version") {
                 conn.execute(
                     "ALTER TABLE vault_entries ADD COLUMN sync_version INTEGER NOT NULL DEFAULT 1",
                     [],
                 )
-                .expect("Failed to add sync_version column");
+                .map_err(|e| format!("Failed to add sync_version column: {}", e))?;
             }
 
             // Backfill entry_uuid for existing rows that don't have one
-            Self::backfill_entry_uuids(conn);
+            Self::backfill_entry_uuids(conn)?;
         }
 
         // 5. Create paired_devices table
@@ -155,7 +157,7 @@ impl DatabaseManager {
             )",
             [],
         )
-        .expect("Failed to create paired_devices table");
+        .map_err(|e| format!("Failed to create paired_devices table: {}", e))?;
 
         // 6. Create sync_log table
         conn.execute(
@@ -172,7 +174,22 @@ impl DatabaseManager {
             )",
             [],
         )
-        .expect("Failed to create sync_log table");
+        .map_err(|e| format!("Failed to create sync_log table: {}", e))?;
+
+        // 7. Create indexes for common queries
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_vault_entry_uuid ON vault_entries (entry_uuid)",
+            [],
+        )
+        .map_err(|e| format!("Failed to create entry_uuid index: {}", e))?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_vault_profile_deleted ON vault_entries (profile_id, deleted_at)",
+            [],
+        )
+        .map_err(|e| format!("Failed to create profile/deleted index: {}", e))?;
+
+        Ok(())
     }
 
     fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
@@ -187,14 +204,14 @@ impl DatabaseManager {
         .unwrap_or(false)
     }
 
-    fn backfill_entry_uuids(conn: &Connection) {
+    fn backfill_entry_uuids(conn: &Connection) -> Result<(), String> {
         let mut stmt = conn
             .prepare("SELECT id FROM vault_entries WHERE entry_uuid IS NULL")
-            .expect("Failed to prepare backfill query");
+            .map_err(|e| format!("Failed to prepare backfill query: {}", e))?;
 
         let ids: Vec<i64> = stmt
             .query_map([], |row| row.get(0))
-            .expect("Failed to query rows for backfill")
+            .map_err(|e| format!("Failed to query rows for backfill: {}", e))?
             .filter_map(|r| r.ok())
             .collect();
 
@@ -204,8 +221,10 @@ impl DatabaseManager {
                 "UPDATE vault_entries SET entry_uuid = ?1 WHERE id = ?2",
                 params![new_uuid, id],
             )
-            .expect("Failed to backfill entry_uuid");
+            .map_err(|e| format!("Failed to backfill entry_uuid: {}", e))?;
         }
+
+        Ok(())
     }
 
     /// Purge tombstoned entries older than 90 days

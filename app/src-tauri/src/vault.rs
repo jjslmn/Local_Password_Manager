@@ -3,7 +3,7 @@ use rusqlite::params;
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::auth::validate_session;
+use crate::auth::{validate_session, get_db_and_session};
 use crate::crypto::{encrypt_aes256_gcm, decrypt_aes256_gcm};
 use crate::db::DatabaseManager;
 
@@ -42,10 +42,8 @@ pub fn get_all_vault_entries(
     state: State<AppState>,
     token: String,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let key = validate_session(&state, &token)?;
-    let active_profile = *state.active_profile_id.lock().map_err(|_| "Lock failed")?;
-    let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
-    let db = db_guard.as_ref().ok_or("DB not init")?;
+    let (db_guard, key, active_profile) = get_db_and_session(&state, &token)?;
+    let db = db_guard.as_ref().unwrap();
 
     let mut stmt = db
         .conn
@@ -95,11 +93,9 @@ pub fn save_entry(
     blob: Vec<u8>,
     profile_id: Option<i64>,
 ) -> Result<String, String> {
-    let key = validate_session(&state, &token)?;
-    let active_profile = *state.active_profile_id.lock().map_err(|_| "Lock failed")?;
+    let (db_guard, key, active_profile) = get_db_and_session(&state, &token)?;
     let target_profile = profile_id.unwrap_or(active_profile);
-    let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
-    let db = db_guard.as_ref().ok_or("DB not init")?;
+    let db = db_guard.as_ref().unwrap();
 
     let (ciphertext, nonce) = encrypt_aes256_gcm(&key, &blob)?;
     let entry_uuid = Uuid::new_v4().to_string();
@@ -124,10 +120,8 @@ pub fn update_entry(
     uuid: String,
     blob: Vec<u8>,
 ) -> Result<String, String> {
-    let key = validate_session(&state, &token)?;
-    let active_profile = *state.active_profile_id.lock().map_err(|_| "Lock failed")?;
-    let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
-    let db = db_guard.as_ref().ok_or("DB not init")?;
+    let (db_guard, key, active_profile) = get_db_and_session(&state, &token)?;
+    let db = db_guard.as_ref().unwrap();
 
     let (ciphertext, nonce) = encrypt_aes256_gcm(&key, &blob)?;
     let now = now_iso();
@@ -152,10 +146,8 @@ pub fn update_entry(
 
 #[tauri::command]
 pub fn delete_entry(state: State<AppState>, token: String, id: i64) -> Result<String, String> {
-    validate_session(&state, &token)?;
-    let active_profile = *state.active_profile_id.lock().map_err(|_| "Lock failed")?;
-    let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
-    let db = db_guard.as_ref().ok_or("DB not init")?;
+    let (db_guard, _key, active_profile) = get_db_and_session(&state, &token)?;
+    let db = db_guard.as_ref().unwrap();
 
     let now = now_iso();
 

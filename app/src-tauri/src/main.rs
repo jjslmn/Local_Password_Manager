@@ -49,7 +49,8 @@ fn main() {
         .manage(app_state)
         .setup(|app| {
             let handle = app.handle();
-            let db_mgr = DatabaseManager::new(handle);
+            let db_mgr = DatabaseManager::new(handle)
+                .map_err(|e| Box::<dyn std::error::Error>::from(e))?;
             let state = app.state::<AppState>();
             *state.db.lock().unwrap() = Some(db_mgr);
             Ok(())

@@ -1,3 +1,4 @@
+use std::sync::MutexGuard;
 use tauri::State;
 use rusqlite::params;
 use argon2::{
@@ -10,6 +11,7 @@ use zeroize::Zeroize;
 use std::time::{Duration, Instant};
 
 use crate::{AppState, SessionState};
+use crate::db::DatabaseManager;
 use crate::vault::migrate_plaintext_entries;
 
 /// Validate session token and return the encryption key
@@ -32,6 +34,22 @@ pub fn validate_session(state: &State<AppState>, token: &str) -> Result<[u8; 32]
     }
 
     Ok(session.encryption_key)
+}
+
+/// Validate session, lock DB, and get active profile in one call.
+/// Returns (db_guard, encryption_key, active_profile_id).
+/// Caller accesses the DB via `db_guard.as_ref().unwrap()` (validated here).
+pub fn get_db_and_session<'a>(
+    state: &'a State<AppState>,
+    token: &str,
+) -> Result<(MutexGuard<'a, Option<DatabaseManager>>, [u8; 32], i64), String> {
+    let key = validate_session(state, token)?;
+    let active_profile = *state.active_profile_id.lock().map_err(|_| "Lock failed")?;
+    let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
+    if db_guard.is_none() {
+        return Err("DB not init".to_string());
+    }
+    Ok((db_guard, key, active_profile))
 }
 
 #[tauri::command]

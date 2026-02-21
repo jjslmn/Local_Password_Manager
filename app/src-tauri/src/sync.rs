@@ -2,7 +2,7 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::auth::validate_session;
+use crate::auth::get_db_and_session;
 use crate::AppState;
 
 // --- Types for frontend communication ---
@@ -44,9 +44,8 @@ pub fn get_paired_devices(
     state: State<AppState>,
     token: String,
 ) -> Result<Vec<PairedDevice>, String> {
-    validate_session(&state, &token)?;
-    let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
-    let db = db_guard.as_ref().ok_or("DB not init")?;
+    let (db_guard, _key, _profile) = get_db_and_session(&state, &token)?;
+    let db = db_guard.as_ref().unwrap();
 
     let mut stmt = db
         .conn
@@ -81,9 +80,8 @@ pub fn forget_device(
     token: String,
     device_id: String,
 ) -> Result<String, String> {
-    validate_session(&state, &token)?;
-    let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
-    let db = db_guard.as_ref().ok_or("DB not init")?;
+    let (db_guard, _key, _profile) = get_db_and_session(&state, &token)?;
+    let db = db_guard.as_ref().unwrap();
 
     db.conn
         .execute(
@@ -100,9 +98,8 @@ pub fn get_sync_history(
     state: State<AppState>,
     token: String,
 ) -> Result<Vec<SyncHistoryEntry>, String> {
-    validate_session(&state, &token)?;
-    let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
-    let db = db_guard.as_ref().ok_or("DB not init")?;
+    let (db_guard, _key, _profile) = get_db_and_session(&state, &token)?;
+    let db = db_guard.as_ref().unwrap();
 
     let mut stmt = db
         .conn

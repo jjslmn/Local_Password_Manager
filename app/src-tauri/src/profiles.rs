@@ -2,7 +2,7 @@ use tauri::State;
 use rusqlite::params;
 
 use crate::AppState;
-use crate::auth::validate_session;
+use crate::auth::{validate_session, get_db_and_session};
 
 #[tauri::command]
 pub fn create_profile(
@@ -10,9 +10,8 @@ pub fn create_profile(
     token: String,
     name: String,
 ) -> Result<i64, String> {
-    validate_session(&state, &token)?;
-    let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
-    let db = db_guard.as_ref().ok_or("DB not init")?;
+    let (db_guard, _key, _profile) = get_db_and_session(&state, &token)?;
+    let db = db_guard.as_ref().unwrap();
 
     db.conn
         .execute("INSERT INTO profiles (name) VALUES (?1)", params![name])
@@ -27,9 +26,8 @@ pub fn get_all_profiles(
     state: State<AppState>,
     token: String,
 ) -> Result<Vec<serde_json::Value>, String> {
-    validate_session(&state, &token)?;
-    let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
-    let db = db_guard.as_ref().ok_or("DB not init")?;
+    let (db_guard, _key, _profile) = get_db_and_session(&state, &token)?;
+    let db = db_guard.as_ref().unwrap();
 
     let mut stmt = db
         .conn
@@ -71,9 +69,8 @@ pub fn rename_profile(
     id: i64,
     name: String,
 ) -> Result<String, String> {
-    validate_session(&state, &token)?;
-    let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
-    let db = db_guard.as_ref().ok_or("DB not init")?;
+    let (db_guard, _key, _profile) = get_db_and_session(&state, &token)?;
+    let db = db_guard.as_ref().unwrap();
 
     db.conn
         .execute(
@@ -91,9 +88,8 @@ pub fn delete_profile(
     token: String,
     id: i64,
 ) -> Result<String, String> {
-    validate_session(&state, &token)?;
-    let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
-    let db = db_guard.as_ref().ok_or("DB not init")?;
+    let (db_guard, _key, _profile) = get_db_and_session(&state, &token)?;
+    let db = db_guard.as_ref().unwrap();
 
     // Check if profile has any active entries
     let entry_count: i64 = db
