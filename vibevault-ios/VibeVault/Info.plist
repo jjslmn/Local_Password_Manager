@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>VibeVault uses Bluetooth to sync your vault securely with your desktop computer. No data is sent to any server.</string>
+    <key>NSFaceIDUsageDescription</key>
+    <string>VibeVault uses Face ID to quickly unlock your vault without entering your master password.</string>
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>bluetooth-central</string>
+    </array>
+</dict>
+</plist>

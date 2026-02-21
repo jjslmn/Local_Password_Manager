@@ -26,6 +26,18 @@ zeroize = "1"
 chrono = { version = "0.4", features = ["serde"] }
 base32 = "0.4"
 totp-rs = "5.0"
+# Sync
+uuid = { version = "1", features = ["v4"] }
+p256 = { version = "0.13", features = ["ecdh"] }
+sha2 = "0.10"
+hkdf = "0.12"
+hmac = "0.12"
+crc32fast = "1"
+tokio = { version = "1", features = ["sync", "time"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+bluer = { version = "0.17", features = ["bluetoothd"] }
+futures = "0.3"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { VaultEntry, Profile, DashboardProps, RawVaultEntry } from "../types";
+import type { VaultEntry, Profile, DashboardProps, RawVaultEntry, PairedDevice, SyncHistoryEntry, SyncProgress } from "../types";
 
 export default function Dashboard({ onLogout, sessionToken }: DashboardProps) {
     const [view, setView] = useState<"home" | "add" | "detail" | "sync" | "profiles">("home");
@@ -19,6 +19,13 @@ export default function Dashboard({ onLogout, sessionToken }: DashboardProps) {
     const [editingProfileId, setEditingProfileId] = useState<number | null>(null);
     const [editingProfileName, setEditingProfileName] = useState("");
     const [saveToProfileId, setSaveToProfileId] = useState<number | null>(null);
+
+    // Sync state
+    const [syncState, setSyncState] = useState<SyncProgress["state"]>("idle");
+    const [syncProgress, setSyncProgress] = useState<SyncProgress>({ state: "idle", chunks_transferred: 0, total_chunks: 0, message: "" });
+    const [pairedDevices, setPairedDevices] = useState<PairedDevice[]>([]);
+    const [syncHistory, setSyncHistory] = useState<SyncHistoryEntry[]>([]);
+    const [syncTab, setSyncTab] = useState<"sync" | "devices" | "history">("sync");
 
     useEffect(() => {
         loadProfiles();
@@ -140,9 +147,9 @@ export default function Dashboard({ onLogout, sessionToken }: DashboardProps) {
                 try {
                     const jsonString = String.fromCharCode(...e.data_blob);
                     const data = JSON.parse(jsonString);
-                    return { id: e.id, uuid: e.uuid, ...data };
+                    return { id: e.id, uuid: e.uuid, entryUuid: e.entry_uuid, ...data };
                 } catch {
-                    return { id: e.id, uuid: e.uuid };
+                    return { id: e.id, uuid: e.uuid, entryUuid: e.entry_uuid };
                 }
             });
             setEntries(parsed);
@@ -230,6 +237,35 @@ export default function Dashboard({ onLogout, sessionToken }: DashboardProps) {
             setView("home");
         } catch (e) {
             alert("Delete Failed: " + e);
+        }
+    }
+
+    // --- SYNC HELPERS ---
+    async function loadPairedDevices() {
+        try {
+            const devices = await invoke<PairedDevice[]>("get_paired_devices", { token: sessionToken });
+            setPairedDevices(devices);
+        } catch {
+            // Failed to load paired devices
+        }
+    }
+
+    async function loadSyncHistory() {
+        try {
+            const history = await invoke<SyncHistoryEntry[]>("get_sync_history", { token: sessionToken });
+            setSyncHistory(history);
+        } catch {
+            // Failed to load sync history
+        }
+    }
+
+    async function handleForgetDevice(deviceId: string) {
+        if (!confirm("Unpair this device? You'll need to pair again to sync.")) return;
+        try {
+            await invoke("forget_device", { deviceId, token: sessionToken });
+            await loadPairedDevices();
+        } catch (e) {
+            alert("Failed to unpair device: " + e);
         }
     }
 
@@ -504,7 +540,7 @@ export default function Dashboard({ onLogout, sessionToken }: DashboardProps) {
                 )}
 
                 {view === "sync" && (
-                    <div style={{ maxWidth: "500px" }}>
+                    <div style={{ maxWidth: "550px" }}>
                         <button
                             onClick={() => setView("home")}
                             style={{ background: "none", border: "none", color: "#888", cursor: "pointer", padding: "0", marginBottom: "20px", display: "flex", alignItems: "center", gap: "6px", fontSize: "14px" }}
@@ -515,7 +551,328 @@ export default function Dashboard({ onLogout, sessionToken }: DashboardProps) {
                             Back
                         </button>
                         <h2 style={{ marginTop: "0" }}>Sync</h2>
-                        <p style={{ color: "#888" }}>Sync functionality coming soon.</p>
+
+                        {/* Tab Bar */}
+                        <div style={{ display: "flex", gap: "0", marginBottom: "24px", borderBottom: "1px solid #333" }}>
+                            {(["sync", "devices", "history"] as const).map(tab => (
+                                <button
+                                    key={tab}
+                                    onClick={() => {
+                                        setSyncTab(tab);
+                                        if (tab === "devices") loadPairedDevices();
+                                        if (tab === "history") loadSyncHistory();
+                                    }}
+                                    style={{
+                                        background: "transparent",
+                                        border: "none",
+                                        borderBottom: syncTab === tab ? "2px solid #8A2BE2" : "2px solid transparent",
+                                        color: syncTab === tab ? "#fff" : "#888",
+                                        padding: "10px 20px",
+                                        cursor: "pointer",
+                                        fontSize: "14px",
+                                        textTransform: "capitalize",
+                                    }}
+                                >
+                                    {tab}
+                                </button>
+                            ))}
+                        </div>
+
+                        {/* Sync Tab */}
+                        {syncTab === "sync" && (
+                            <div>
+                                {syncState === "idle" && (
+                                    <div>
+                                        <p style={{ color: "#888", marginBottom: "24px" }}>
+                                            Sync your vault with an iPhone over Bluetooth Low Energy. Both devices must use the same master password.
+                                        </p>
+                                        <div style={{ display: "flex", gap: "12px" }}>
+                                            <button
+                                                onClick={() => setSyncState("advertising")}
+                                                style={{
+                                                    flex: 1,
+                                                    padding: "16px",
+                                                    background: "#8A2BE2",
+                                                    color: "white",
+                                                    border: "none",
+                                                    borderRadius: "8px",
+                                                    cursor: "pointer",
+                                                    fontSize: "15px",
+                                                    fontWeight: "bold",
+                                                }}
+                                            >
+                                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ verticalAlign: "middle", marginRight: "8px" }}>
+                                                    <path d="M12 5l7 7-7 7M5 12h14"/>
+                                                </svg>
+                                                Send to iPhone
+                                            </button>
+                                            <button
+                                                onClick={() => setSyncState("advertising")}
+                                                style={{
+                                                    flex: 1,
+                                                    padding: "16px",
+                                                    background: "#252525",
+                                                    color: "white",
+                                                    border: "1px solid #444",
+                                                    borderRadius: "8px",
+                                                    cursor: "pointer",
+                                                    fontSize: "15px",
+                                                    fontWeight: "bold",
+                                                }}
+                                            >
+                                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ verticalAlign: "middle", marginRight: "8px" }}>
+                                                    <path d="M19 12H5M12 5l-7 7 7 7"/>
+                                                </svg>
+                                                Receive from iPhone
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {syncState === "advertising" && (
+                                    <div style={{ textAlign: "center", padding: "30px 0" }}>
+                                        <div style={{
+                                            width: "64px",
+                                            height: "64px",
+                                            margin: "0 auto 20px",
+                                            border: "3px solid #8A2BE2",
+                                            borderRadius: "50%",
+                                            borderTopColor: "transparent",
+                                            animation: "spin 1s linear infinite",
+                                        }} />
+                                        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+                                        <p style={{ fontSize: "18px", marginBottom: "8px" }}>Waiting for iPhone...</p>
+                                        <p style={{ color: "#888", fontSize: "14px" }}>Open VibeVault on your iPhone and tap "Sync with Desktop"</p>
+                                        <button
+                                            onClick={() => setSyncState("idle")}
+                                            style={{
+                                                marginTop: "20px",
+                                                padding: "10px 24px",
+                                                background: "#333",
+                                                color: "#888",
+                                                border: "none",
+                                                borderRadius: "6px",
+                                                cursor: "pointer",
+                                                fontSize: "14px",
+                                            }}
+                                        >
+                                            Cancel
+                                        </button>
+                                    </div>
+                                )}
+
+                                {syncState === "pairing" && (
+                                    <div style={{ textAlign: "center", padding: "30px 0" }}>
+                                        <p style={{ color: "#888", fontSize: "14px", marginBottom: "16px" }}>Enter this code on your iPhone</p>
+                                        <div style={{
+                                            fontFamily: "monospace",
+                                            fontSize: "48px",
+                                            letterSpacing: "12px",
+                                            color: "#8A2BE2",
+                                            marginBottom: "24px",
+                                            fontWeight: "bold",
+                                        }}>
+                                            {syncProgress.message || "------"}
+                                        </div>
+                                        <p style={{ color: "#555", fontSize: "12px" }}>Code expires in 60 seconds</p>
+                                        <button
+                                            onClick={() => setSyncState("idle")}
+                                            style={{
+                                                marginTop: "20px",
+                                                padding: "10px 24px",
+                                                background: "#333",
+                                                color: "#888",
+                                                border: "none",
+                                                borderRadius: "6px",
+                                                cursor: "pointer",
+                                                fontSize: "14px",
+                                            }}
+                                        >
+                                            Cancel
+                                        </button>
+                                    </div>
+                                )}
+
+                                {syncState === "transferring" && (
+                                    <div style={{ padding: "30px 0" }}>
+                                        <p style={{ fontSize: "16px", marginBottom: "16px" }}>Syncing...</p>
+                                        <div style={{
+                                            height: "8px",
+                                            background: "#333",
+                                            borderRadius: "4px",
+                                            overflow: "hidden",
+                                            marginBottom: "12px",
+                                        }}>
+                                            <div style={{
+                                                height: "100%",
+                                                background: "#8A2BE2",
+                                                borderRadius: "4px",
+                                                width: syncProgress.total_chunks > 0
+                                                    ? `${(syncProgress.chunks_transferred / syncProgress.total_chunks) * 100}%`
+                                                    : "0%",
+                                                transition: "width 0.3s ease",
+                                            }} />
+                                        </div>
+                                        <p style={{ color: "#888", fontSize: "13px" }}>
+                                            {syncProgress.chunks_transferred} / {syncProgress.total_chunks} chunks
+                                        </p>
+                                    </div>
+                                )}
+
+                                {syncState === "complete" && (
+                                    <div style={{ textAlign: "center", padding: "30px 0" }}>
+                                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#4CAF50" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: "16px" }}>
+                                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                                            <polyline points="22 4 12 14.01 9 11.01"/>
+                                        </svg>
+                                        <p style={{ fontSize: "18px", marginBottom: "8px" }}>Sync Complete</p>
+                                        <p style={{ color: "#888", fontSize: "14px" }}>{syncProgress.message}</p>
+                                        <button
+                                            onClick={() => { setSyncState("idle"); refreshVault(); }}
+                                            style={{
+                                                marginTop: "20px",
+                                                padding: "12px 32px",
+                                                background: "#8A2BE2",
+                                                color: "white",
+                                                border: "none",
+                                                borderRadius: "6px",
+                                                cursor: "pointer",
+                                                fontSize: "14px",
+                                                fontWeight: "bold",
+                                            }}
+                                        >
+                                            Done
+                                        </button>
+                                    </div>
+                                )}
+
+                                {syncState === "error" && (
+                                    <div style={{ textAlign: "center", padding: "30px 0" }}>
+                                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#ff4444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: "16px" }}>
+                                            <circle cx="12" cy="12" r="10"/>
+                                            <line x1="15" y1="9" x2="9" y2="15"/>
+                                            <line x1="9" y1="9" x2="15" y2="15"/>
+                                        </svg>
+                                        <p style={{ fontSize: "18px", marginBottom: "8px" }}>Sync Failed</p>
+                                        <p style={{ color: "#888", fontSize: "14px" }}>{syncProgress.message}</p>
+                                        <button
+                                            onClick={() => setSyncState("idle")}
+                                            style={{
+                                                marginTop: "20px",
+                                                padding: "12px 32px",
+                                                background: "#333",
+                                                color: "white",
+                                                border: "none",
+                                                borderRadius: "6px",
+                                                cursor: "pointer",
+                                                fontSize: "14px",
+                                            }}
+                                        >
+                                            Try Again
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* Devices Tab */}
+                        {syncTab === "devices" && (
+                            <div>
+                                {pairedDevices.length === 0 ? (
+                                    <p style={{ color: "#888" }}>No paired devices. Start a sync to pair with your iPhone.</p>
+                                ) : (
+                                    pairedDevices.map(device => (
+                                        <div
+                                            key={device.id}
+                                            style={{
+                                                padding: "15px",
+                                                background: "#252525",
+                                                marginBottom: "10px",
+                                                borderRadius: "8px",
+                                                border: "1px solid #333",
+                                                display: "flex",
+                                                justifyContent: "space-between",
+                                                alignItems: "center",
+                                            }}
+                                        >
+                                            <div>
+                                                <strong>{device.device_name}</strong>
+                                                <div style={{ color: "#555", fontSize: "12px", marginTop: "4px" }}>
+                                                    {device.last_sync_at
+                                                        ? `Last synced: ${new Date(device.last_sync_at).toLocaleString()}`
+                                                        : "Never synced"}
+                                                </div>
+                                                <div style={{ color: "#555", fontSize: "11px", marginTop: "2px" }}>
+                                                    Paired: {new Date(device.paired_at).toLocaleDateString()}
+                                                </div>
+                                            </div>
+                                            <button
+                                                onClick={() => handleForgetDevice(device.device_id)}
+                                                style={{
+                                                    background: "none",
+                                                    border: "1px solid #ff4444",
+                                                    color: "#ff4444",
+                                                    padding: "6px 12px",
+                                                    borderRadius: "6px",
+                                                    cursor: "pointer",
+                                                    fontSize: "12px",
+                                                }}
+                                            >
+                                                Unpair
+                                            </button>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+                        )}
+
+                        {/* History Tab */}
+                        {syncTab === "history" && (
+                            <div>
+                                {syncHistory.length === 0 ? (
+                                    <p style={{ color: "#888" }}>No sync history yet.</p>
+                                ) : (
+                                    syncHistory.map(entry => (
+                                        <div
+                                            key={entry.id}
+                                            style={{
+                                                padding: "12px 15px",
+                                                background: "#252525",
+                                                marginBottom: "8px",
+                                                borderRadius: "8px",
+                                                border: "1px solid #333",
+                                                fontSize: "13px",
+                                            }}
+                                        >
+                                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                                <span>
+                                                    <span style={{
+                                                        display: "inline-block",
+                                                        width: "8px",
+                                                        height: "8px",
+                                                        borderRadius: "50%",
+                                                        background: entry.status === "success" ? "#4CAF50" : entry.status === "partial" ? "#FFC107" : "#ff4444",
+                                                        marginRight: "8px",
+                                                    }} />
+                                                    {entry.direction === "push" ? "Sent" : "Received"}
+                                                </span>
+                                                <span style={{ color: "#555", fontSize: "12px" }}>
+                                                    {entry.completed_at ? new Date(entry.completed_at).toLocaleString() : "In progress"}
+                                                </span>
+                                            </div>
+                                            <div style={{ color: "#888", fontSize: "12px", marginTop: "4px" }}>
+                                                {entry.entries_sent > 0 && `${entry.entries_sent} sent`}
+                                                {entry.entries_sent > 0 && entry.entries_received > 0 && " / "}
+                                                {entry.entries_received > 0 && `${entry.entries_received} received`}
+                                                {entry.error_message && (
+                                                    <span style={{ color: "#ff4444", marginLeft: "8px" }}>{entry.error_message}</span>
+                                                )}
+                                            </div>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+                        )}
                     </div>
                 )}
 
