@@ -9,6 +9,8 @@ use argon2::{
     Argon2
 };
 use rand::RngCore;
+use std::time::{Duration, Instant};
+use zeroize::Zeroize;
 use base64::{Engine as _, engine::general_purpose};
 use aes_gcm::{
     aead::{Aead, KeyInit},
@@ -126,11 +128,19 @@ struct SessionState {
     encryption_key: [u8; 32],
 }
 
+impl Drop for SessionState {
+    fn drop(&mut self) {
+        self.encryption_key.zeroize();
+        self.token.zeroize();
+    }
+}
+
 // --- APP STATE ---
 struct AppState {
     db: Arc<Mutex<Option<DatabaseManager>>>,
     active_profile_id: Arc<Mutex<i64>>,
     session: Arc<Mutex<Option<SessionState>>>,
+    failed_attempts: Arc<Mutex<(u32, Option<Instant>)>>,
 }
 
 // --- HELPERS ---
@@ -252,19 +262,56 @@ fn register_user(state: State<AppState>, username: String, pass: String) -> Resu
 
 #[tauri::command]
 fn unlock_vault(state: State<AppState>, username: String, pass: String) -> Result<String, String> {
+    // Brute-force protection: enforce delay after repeated failures
+    {
+        let guard = state.failed_attempts.lock().map_err(|_| "Lock failed")?;
+        let (attempts, last_failed) = &*guard;
+        if *attempts >= 3 {
+            if let Some(last) = last_failed {
+                // Exponential backoff: 1s, 2s, 4s, 8s, 16s (capped)
+                let delay = Duration::from_secs(1u64 << (*attempts - 3).min(4));
+                if last.elapsed() < delay {
+                    let remaining = (delay - last.elapsed()).as_secs() + 1;
+                    return Err(format!("Too many failed attempts. Wait {} seconds.", remaining));
+                }
+            }
+        }
+    }
+
     let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
     let db = db_guard.as_ref().ok_or("DB not init")?;
 
-    // Use generic error message to prevent username enumeration
-    let (hash, enc_salt_hex): (String, String) = db.conn.query_row(
-        "SELECT password_hash, encryption_salt FROM users WHERE username = ?1",
-        params![username],
-        |row| Ok((row.get(0)?, row.get::<_, String>(1)?)),
-    ).map_err(|_| "Invalid username or password")?;
+    // Authenticate — use closure to consolidate failure handling
+    let auth_result: Result<String, String> = (|| {
+        let (hash, enc_salt_hex): (String, String) = db.conn.query_row(
+            "SELECT password_hash, encryption_salt FROM users WHERE username = ?1",
+            params![username],
+            |row| Ok((row.get(0)?, row.get::<_, String>(1)?)),
+        ).map_err(|_| "Invalid username or password".to_string())?;
 
-    let parsed_hash = PasswordHash::new(&hash).map_err(|_| "Invalid username or password")?;
-    Argon2::default().verify_password(pass.as_bytes(), &parsed_hash)
-        .map_err(|_| "Invalid username or password")?;
+        let parsed_hash = PasswordHash::new(&hash)
+            .map_err(|_| "Invalid username or password".to_string())?;
+        Argon2::default().verify_password(pass.as_bytes(), &parsed_hash)
+            .map_err(|_| "Invalid username or password".to_string())?;
+
+        Ok(enc_salt_hex)
+    })();
+
+    let enc_salt_hex = match auth_result {
+        Ok(salt) => {
+            // Reset failed attempts on success
+            let mut guard = state.failed_attempts.lock().map_err(|_| "Lock failed")?;
+            *guard = (0, None);
+            salt
+        }
+        Err(e) => {
+            // Record failed attempt
+            let mut guard = state.failed_attempts.lock().map_err(|_| "Lock failed")?;
+            guard.0 += 1;
+            guard.1 = Some(Instant::now());
+            return Err(e);
+        }
+    };
 
     // Handle existing users who don't have an encryption_salt yet
     let enc_salt_hex = if enc_salt_hex.is_empty() {
@@ -292,6 +339,7 @@ fn unlock_vault(state: State<AppState>, username: String, pass: String) -> Resul
     let mut token_bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut token_bytes);
     let session_token = hex::encode(token_bytes);
+    token_bytes.zeroize();
 
     // Migrate any plaintext entries before storing session
     migrate_plaintext_entries(db, &encryption_key)?;
@@ -303,6 +351,9 @@ fn unlock_vault(state: State<AppState>, username: String, pass: String) -> Resul
         token: session_token.clone(),
         encryption_key,
     });
+
+    // Zeroize local copy of encryption key (SessionState has its own copy)
+    encryption_key.zeroize();
 
     Ok(session_token)
 }
@@ -539,7 +590,8 @@ fn set_active_profile(state: State<AppState>, token: String, id: i64) -> Result<
 }
 
 #[tauri::command]
-fn get_totp_token(secret: String) -> Result<String, String> {
+fn get_totp_token(state: State<AppState>, token: String, secret: String) -> Result<String, String> {
+    validate_session(&state, &token)?;
     let clean_secret = secret.replace(" ", "").replace("=", "").to_uppercase();
     let secret_bytes = base32::decode(base32::Alphabet::RFC4648 { padding: false }, &clean_secret)
         .ok_or("Invalid Base32 Secret")?;
@@ -555,6 +607,7 @@ fn main() {
         db: Arc::new(Mutex::new(None)),
         active_profile_id: Arc::new(Mutex::new(1)), // Default to profile 1 (Personal)
         session: Arc::new(Mutex::new(None)),
+        failed_attempts: Arc::new(Mutex::new((0, None))),
     };
 
     tauri::Builder::default()

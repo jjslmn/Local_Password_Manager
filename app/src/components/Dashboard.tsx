@@ -37,7 +37,7 @@ export default function Dashboard({ onLogout, sessionToken }: DashboardProps) {
         let interval: ReturnType<typeof setInterval> | undefined;
         if (view === "detail" && currentEntry.totpSecret) {
             const fetchCode = () => {
-                invoke<string>("get_totp_token", { secret: currentEntry.totpSecret })
+                invoke<string>("get_totp_token", { secret: currentEntry.totpSecret, token: sessionToken })
                     .then((code) => setTotpCode(code))
                     .catch(() => setTotpCode("Error"));
             };
@@ -172,7 +172,7 @@ export default function Dashboard({ onLogout, sessionToken }: DashboardProps) {
                 }
                 // Also validate with backend
                 try {
-                    await invoke<string>("get_totp_token", { secret: currentEntry.totpSecret });
+                    await invoke<string>("get_totp_token", { secret: currentEntry.totpSecret, token: sessionToken });
                 } catch {
                     alert("Invalid TOTP secret key. Please enter a valid Base32 encoded secret.");
                     return;
