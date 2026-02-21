@@ -126,7 +126,7 @@ pub fn derive_session_key_from_secret(shared_secret: &[u8]) -> Result<[u8; 32], 
 
 /// Encrypt a sync payload with the session key (AES-256-GCM transport layer)
 pub fn encrypt_transport(key: &[u8; 32], plaintext: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
-    crate::vault::encrypt_blob(key, plaintext)
+    crate::crypto::encrypt_aes256_gcm(key, plaintext)
 }
 
 /// Decrypt a sync payload with the session key
@@ -135,7 +135,7 @@ pub fn decrypt_transport(
     ciphertext: &[u8],
     nonce: &[u8],
 ) -> Result<Vec<u8>, String> {
-    crate::vault::decrypt_blob(key, ciphertext, nonce)
+    crate::crypto::decrypt_aes256_gcm(key, ciphertext, nonce)
 }
 
 #[cfg(test)]

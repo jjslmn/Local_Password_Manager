@@ -2,6 +2,7 @@
 
 mod auth;
 mod ble;
+mod crypto;
 mod db;
 mod profiles;
 mod sync;

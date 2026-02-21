@@ -1,43 +1,11 @@
 use tauri::State;
 use rusqlite::params;
-use aes_gcm::{
-    aead::{Aead, KeyInit},
-    Aes256Gcm, Nonce,
-};
-use rand::RngCore;
 use uuid::Uuid;
 
 use crate::AppState;
 use crate::auth::validate_session;
+use crate::crypto::{encrypt_aes256_gcm, decrypt_aes256_gcm};
 use crate::db::DatabaseManager;
-
-/// Encrypt data with AES-256-GCM, returns (ciphertext, nonce)
-pub fn encrypt_blob(key: &[u8; 32], plaintext: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
-    let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| "Encryption init failed")?;
-    let mut nonce_bytes = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher
-        .encrypt(nonce, plaintext)
-        .map_err(|_| "Encryption failed")?;
-    Ok((ciphertext, nonce_bytes.to_vec()))
-}
-
-/// Decrypt data with AES-256-GCM
-pub fn decrypt_blob(
-    key: &[u8; 32],
-    ciphertext: &[u8],
-    nonce_bytes: &[u8],
-) -> Result<Vec<u8>, String> {
-    if nonce_bytes.len() != 12 {
-        return Err("Invalid nonce length".to_string());
-    }
-    let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| "Decryption init failed")?;
-    let nonce = Nonce::from_slice(nonce_bytes);
-    cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|_| "Decryption failed — wrong password or corrupted data".to_string())
-}
 
 /// Migrate plaintext entries to encrypted (called after unlock)
 pub fn migrate_plaintext_entries(db: &DatabaseManager, key: &[u8; 32]) -> Result<(), String> {
@@ -53,7 +21,7 @@ pub fn migrate_plaintext_entries(db: &DatabaseManager, key: &[u8; 32]) -> Result
         .collect();
 
     for (id, plaintext_blob, _nonce) in rows {
-        let (ciphertext, new_nonce) = encrypt_blob(key, &plaintext_blob)?;
+        let (ciphertext, new_nonce) = encrypt_aes256_gcm(key, &plaintext_blob)?;
         db.conn
             .execute(
                 "UPDATE vault_entries SET data_blob = ?1, nonce = ?2 WHERE id = ?3",
@@ -106,7 +74,7 @@ pub fn get_all_vault_entries(
         let plaintext = if nonce.is_empty() {
             blob
         } else {
-            decrypt_blob(&key, &blob, &nonce)?
+            decrypt_aes256_gcm(&key, &blob, &nonce)?
         };
 
         entries.push(serde_json::json!({
@@ -133,7 +101,7 @@ pub fn save_entry(
     let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
     let db = db_guard.as_ref().ok_or("DB not init")?;
 
-    let (ciphertext, nonce) = encrypt_blob(&key, &blob)?;
+    let (ciphertext, nonce) = encrypt_aes256_gcm(&key, &blob)?;
     let entry_uuid = Uuid::new_v4().to_string();
     let now = now_iso();
 
@@ -161,7 +129,7 @@ pub fn update_entry(
     let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
     let db = db_guard.as_ref().ok_or("DB not init")?;
 
-    let (ciphertext, nonce) = encrypt_blob(&key, &blob)?;
+    let (ciphertext, nonce) = encrypt_aes256_gcm(&key, &blob)?;
     let now = now_iso();
 
     // Update entry, bump sync_version, update timestamp
