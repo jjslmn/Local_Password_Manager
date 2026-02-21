@@ -18,10 +18,10 @@ Download the latest release for your platform from the [Releases](https://github
 
 | Platform | Download | Install Method |
 |----------|----------|----------------|
-| Windows 10/11 | `VibeVault_1.0.3_x64-setup.exe` | Run installer, follow prompts |
-| Windows 10/11 | `VibeVault_1.0.3_x64_en-US.msi` | Run MSI, follow prompts |
-| Ubuntu/Debian | `vibevault_1.0.3_amd64.deb` | `sudo dpkg -i vibevault_1.0.3_amd64.deb` |
-| Ubuntu/Linux | `vibevault_1.0.3_amd64.AppImage` | `chmod +x *.AppImage && ./vibevault_1.0.3_amd64.AppImage` |
+| Windows 10/11 | `VibeVault_1.0.4_x64-setup.exe` | Run installer, follow prompts |
+| Windows 10/11 | `VibeVault_1.0.4_x64_en-US.msi` | Run MSI, follow prompts |
+| Ubuntu/Debian | `vibevault_1.0.4_amd64.deb` | `sudo dpkg -i vibevault_1.0.4_amd64.deb` |
+| Ubuntu/Linux | `vibevault_1.0.4_amd64.AppImage` | `chmod +x *.AppImage && ./vibevault_1.0.4_amd64.AppImage` |
 
 After installation, VibeVault will appear in your applications menu and can be pinned to your taskbar.
 
@@ -124,8 +124,8 @@ Desktop releases are automated via GitHub Actions. To create a new release:
 2. Commit and push to `master`
 3. Create and push a version tag:
    ```bash
-   git tag v1.0.3
-   git push origin v1.0.3
+   git tag v1.0.4
+   git push origin v1.0.4
    ```
 4. GitHub Actions will build for Ubuntu and Windows, then publish to the [Releases](https://github.com/jjslmn/Local_Password_Manager/releases) page
 

@@ -1,6 +1,6 @@
 {
     "productName": "VibeVault",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "identifier": "com.vibevault.app",
     "build": {
         "beforeDevCommand": "npm run dev",
