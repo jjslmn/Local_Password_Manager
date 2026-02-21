@@ -186,7 +186,25 @@ impl DatabaseManager {
         )
         .map_err(|e| format!("Failed to create sync_log table: {}", e))?;
 
-        // 7. Create indexes for common queries
+        // 7. Create login_attempts table for persistent brute-force protection
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS login_attempts (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                last_failed_at TEXT
+            )",
+            [],
+        )
+        .map_err(|e| format!("Failed to create login_attempts table: {}", e))?;
+
+        // Ensure the singleton row exists
+        conn.execute(
+            "INSERT OR IGNORE INTO login_attempts (id, failed_count) VALUES (1, 0)",
+            [],
+        )
+        .map_err(|e| format!("Failed to seed login_attempts: {}", e))?;
+
+        // 8. Create indexes for common queries
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_vault_entry_uuid ON vault_entries (entry_uuid)",
             [],
@@ -204,11 +222,8 @@ impl DatabaseManager {
 
     fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
         conn.query_row(
-            &format!(
-                "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='{}'",
-                table, column
-            ),
-            [],
+            "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name=?2",
+            params![table, column],
             |row| row.get::<_, i64>(0).map(|c| c > 0),
         )
         .unwrap_or(false)

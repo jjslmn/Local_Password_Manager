@@ -33,7 +33,8 @@ pub struct AppState {
     pub db: Arc<Mutex<Option<DatabaseManager>>>,
     pub active_profile_id: Arc<Mutex<i64>>,
     pub session: Arc<Mutex<Option<SessionState>>>,
-    pub failed_attempts: Arc<Mutex<(u32, Option<Instant>)>>,
+    pub last_activity: Arc<Mutex<Instant>>,
+    pub auto_lock_seconds: Arc<Mutex<u64>>,
 }
 
 // --- MAIN ---
@@ -42,7 +43,8 @@ fn main() {
         db: Arc::new(Mutex::new(None)),
         active_profile_id: Arc::new(Mutex::new(1)),
         session: Arc::new(Mutex::new(None)),
-        failed_attempts: Arc::new(Mutex::new((0, None))),
+        last_activity: Arc::new(Mutex::new(Instant::now())),
+        auto_lock_seconds: Arc::new(Mutex::new(900)), // 15 minutes default
     };
 
     tauri::Builder::default()
@@ -74,6 +76,9 @@ fn main() {
             sync::get_paired_devices,
             sync::forget_device,
             sync::get_sync_history,
+            auth::touch_activity,
+            auth::get_auto_lock_seconds,
+            auth::set_auto_lock_seconds,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

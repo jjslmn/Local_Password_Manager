@@ -14,8 +14,23 @@ use crate::{AppState, SessionState};
 use crate::db::DatabaseManager;
 use crate::vault::migrate_plaintext_entries;
 
-/// Validate session token and return the encryption key
+/// Validate session token and return the encryption key.
+/// Also enforces auto-lock timeout — if too much time has passed since
+/// the last activity, the session is cleared and an error is returned.
 pub fn validate_session(state: &State<AppState>, token: &str) -> Result<[u8; 32], String> {
+    // Check auto-lock timeout
+    {
+        let last = state.last_activity.lock().map_err(|_| "Lock failed")?;
+        let timeout = *state.auto_lock_seconds.lock().map_err(|_| "Lock failed")?;
+        if timeout > 0 && last.elapsed() > Duration::from_secs(timeout) {
+            // Clear the expired session
+            drop(last);
+            let mut session_guard = state.session.lock().map_err(|_| "Lock failed")?;
+            *session_guard = None;
+            return Err("Session expired. Please log in again.".to_string());
+        }
+    }
+
     let session_guard = state.session.lock().map_err(|_| "Lock failed")?;
     let session = session_guard
         .as_ref()
@@ -31,6 +46,11 @@ pub fn validate_session(state: &State<AppState>, token: &str) -> Result<[u8; 32]
     }
     if diff != 0 {
         return Err("Session expired. Please log in again.".to_string());
+    }
+
+    // Update last activity timestamp
+    if let Ok(mut last) = state.last_activity.lock() {
+        *last = Instant::now();
     }
 
     Ok(session.encryption_key)
@@ -111,26 +131,37 @@ pub fn unlock_vault(
     username: String,
     pass: String,
 ) -> Result<String, String> {
-    // Brute-force protection: enforce delay after repeated failures
+    let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
+    let db = db_guard.as_ref().ok_or("DB not init")?;
+
+    // Brute-force protection: read persisted attempt counter from DB
     {
-        let guard = state.failed_attempts.lock().map_err(|_| "Lock failed")?;
-        let (attempts, last_failed) = &*guard;
-        if *attempts >= 3 {
-            if let Some(last) = last_failed {
-                let delay = Duration::from_secs(1u64 << (*attempts - 3).min(4));
-                if last.elapsed() < delay {
-                    let remaining = (delay - last.elapsed()).as_secs() + 1;
-                    return Err(format!(
-                        "Too many failed attempts. Wait {} seconds.",
-                        remaining
-                    ));
+        let (failed_count, last_failed_at): (u32, Option<String>) = db
+            .conn
+            .query_row(
+                "SELECT failed_count, last_failed_at FROM login_attempts WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap_or((0, None));
+
+        if failed_count >= 3 {
+            if let Some(ref ts) = last_failed_at {
+                if let Ok(last) = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S") {
+                    let now = chrono::Utc::now().naive_utc();
+                    let delay_secs = 1i64 << (failed_count - 3).min(4);
+                    let elapsed = (now - last).num_seconds();
+                    if elapsed < delay_secs {
+                        let remaining = delay_secs - elapsed + 1;
+                        return Err(format!(
+                            "Too many failed attempts. Wait {} seconds.",
+                            remaining
+                        ));
+                    }
                 }
             }
         }
     }
-
-    let db_guard = state.db.lock().map_err(|_| "Lock failed")?;
-    let db = db_guard.as_ref().ok_or("DB not init")?;
 
     // Authenticate
     let auth_result: Result<String, String> = (|| {
@@ -154,14 +185,19 @@ pub fn unlock_vault(
 
     let enc_salt_hex = match auth_result {
         Ok(salt) => {
-            let mut guard = state.failed_attempts.lock().map_err(|_| "Lock failed")?;
-            *guard = (0, None);
+            // Reset counter on success
+            let _ = db.conn.execute(
+                "UPDATE login_attempts SET failed_count = 0, last_failed_at = NULL WHERE id = 1",
+                [],
+            );
             salt
         }
         Err(e) => {
-            let mut guard = state.failed_attempts.lock().map_err(|_| "Lock failed")?;
-            guard.0 += 1;
-            guard.1 = Some(Instant::now());
+            // Increment persisted counter
+            let _ = db.conn.execute(
+                "UPDATE login_attempts SET failed_count = failed_count + 1, last_failed_at = datetime('now') WHERE id = 1",
+                [],
+            );
             return Err(e);
         }
     };
@@ -202,13 +238,16 @@ pub fn unlock_vault(
     // Clean up old tombstones
     let _ = db.cleanup_tombstones();
 
-    // Store session
+    // Store session and reset activity timer
     drop(db_guard);
     let mut session_guard = state.session.lock().map_err(|_| "Lock failed")?;
     *session_guard = Some(SessionState {
         token: session_token.clone(),
         encryption_key,
     });
+    if let Ok(mut last) = state.last_activity.lock() {
+        *last = Instant::now();
+    }
 
     // Zeroize local copy
     encryption_key.zeroize();
@@ -226,4 +265,26 @@ pub fn lock_vault(state: State<AppState>) -> Result<String, String> {
     *active_id = 1;
 
     Ok("Locked".to_string())
+}
+
+/// Called by the frontend on user interaction to reset the inactivity timer.
+#[tauri::command]
+pub fn touch_activity(state: State<AppState>) -> Result<(), String> {
+    let mut last = state.last_activity.lock().map_err(|_| "Lock failed")?;
+    *last = Instant::now();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_auto_lock_seconds(state: State<AppState>) -> Result<u64, String> {
+    let timeout = *state.auto_lock_seconds.lock().map_err(|_| "Lock failed")?;
+    Ok(timeout)
+}
+
+#[tauri::command]
+pub fn set_auto_lock_seconds(state: State<AppState>, token: String, seconds: u64) -> Result<String, String> {
+    validate_session(&state, &token)?;
+    let mut timeout = state.auto_lock_seconds.lock().map_err(|_| "Lock failed")?;
+    *timeout = seconds;
+    Ok(format!("Auto-lock set to {} seconds", seconds))
 }

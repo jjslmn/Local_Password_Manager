@@ -197,7 +197,11 @@ pub async fn start_peripheral(
                                 .await;
                         }
                     }
-                    Err(e) => eprintln!("Pairing write accept error: {}", e),
+                    Err(e) => {
+                        #[cfg(debug_assertions)]
+                        eprintln!("Pairing write accept error: {}", e);
+                        let _ = e;
+                    }
                 }
             }
         }
@@ -217,7 +221,11 @@ pub async fn start_peripheral(
                             }
                         }
                     }
-                    Err(e) => eprintln!("Control write accept error: {}", e),
+                    Err(e) => {
+                        #[cfg(debug_assertions)]
+                        eprintln!("Control write accept error: {}", e);
+                        let _ = e;
+                    }
                 }
             }
         }
@@ -235,7 +243,11 @@ pub async fn start_peripheral(
                                 .await;
                         }
                     }
-                    Err(e) => eprintln!("Data write accept error: {}", e),
+                    Err(e) => {
+                        #[cfg(debug_assertions)]
+                        eprintln!("Data write accept error: {}", e);
+                        let _ = e;
+                    }
                 }
             }
         }

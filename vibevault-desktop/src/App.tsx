@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Dashboard from "./components/Dashboard";
 
@@ -9,10 +9,38 @@ function App() {
     const [username, setUsername] = useState("");
     const [password, setPassword] = useState("");
     const [error, setError] = useState("");
+    const activityThrottle = useRef(0);
 
     useEffect(() => {
         checkRegistration();
     }, []);
+
+    // Inactivity auto-lock: notify the backend on user interaction (throttled)
+    const touchActivity = useCallback(() => {
+        const now = Date.now();
+        if (now - activityThrottle.current < 30_000) return; // throttle to once per 30s
+        activityThrottle.current = now;
+        invoke("touch_activity").catch(() => {});
+    }, []);
+
+    useEffect(() => {
+        if (!isAuthenticated) return;
+        const events = ["mousemove", "keydown", "mousedown", "scroll", "touchstart"];
+        events.forEach((e) => window.addEventListener(e, touchActivity));
+        // Periodically check if session is still alive (every 60s)
+        const interval = setInterval(async () => {
+            try {
+                await invoke("get_all_vault_entries", { token: sessionToken });
+            } catch {
+                // Session expired on backend — lock the UI
+                handleLogout();
+            }
+        }, 60_000);
+        return () => {
+            events.forEach((e) => window.removeEventListener(e, touchActivity));
+            clearInterval(interval);
+        };
+    }, [isAuthenticated, sessionToken, touchActivity]);
 
     async function checkRegistration() {
         try {
@@ -34,7 +62,8 @@ function App() {
             setError("");
             alert("Registration Successful! Please Log In.");
         } catch (e) {
-            setError("Registration failed: " + e);
+            console.error("Registration failed:", e);
+            setError("Registration failed. Please try again.");
         }
     }
 
@@ -45,7 +74,11 @@ function App() {
             setIsAuthenticated(true);
             setError("");
         } catch (e) {
-            setError("Login failed: " + e);
+            const msg = typeof e === "string" && e.startsWith("Too many failed attempts")
+                ? e
+                : "Login failed. Please check your credentials and try again.";
+            console.error("Login failed:", e);
+            setError(msg);
         }
     }
 
