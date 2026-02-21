@@ -35,7 +35,7 @@ jobs:
         with:
           node-version: 'lts/*'
           cache: 'npm'
-          cache-dependency-path: vibevault-desktop/app/package-lock.json
+          cache-dependency-path: vibevault-desktop/package-lock.json
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -43,18 +43,18 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: './vibevault-desktop/app/src-tauri -> target'
+          workspaces: './vibevault-desktop/src-tauri -> target'
 
       - name: Install frontend dependencies
         run: npm ci
-        working-directory: vibevault-desktop/app
+        working-directory: vibevault-desktop
 
       - name: Build the app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          projectPath: vibevault-desktop/app
+          projectPath: vibevault-desktop
           tagName: ${{ github.ref_name }}
           releaseName: 'VibeVault ${{ github.ref_name }}'
           releaseBody: 'Download the installer for your platform below.'

@@ -51,7 +51,7 @@ sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev
 1. Clone the repository:
    ```bash
    git clone https://github.com/jjslmn/Local_Password_Manager.git
-   cd Local_Password_Manager/vibevault-desktop/app
+   cd Local_Password_Manager/vibevault-desktop
    ```
 
 2. Install dependencies:
@@ -68,15 +68,15 @@ sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev
 
 | Platform | Output Location | Description |
 |----------|-----------------|-------------|
-| Windows | `vibevault-desktop/app/src-tauri/target/release/bundle/nsis/` | NSIS installer (.exe) |
-| Windows | `vibevault-desktop/app/src-tauri/target/release/bundle/msi/` | MSI installer |
-| Ubuntu | `vibevault-desktop/app/src-tauri/target/release/bundle/deb/` | Debian package (.deb) |
-| Linux | `vibevault-desktop/app/src-tauri/target/release/bundle/appimage/` | AppImage (portable) |
+| Windows | `vibevault-desktop/src-tauri/target/release/bundle/nsis/` | NSIS installer (.exe) |
+| Windows | `vibevault-desktop/src-tauri/target/release/bundle/msi/` | MSI installer |
+| Ubuntu | `vibevault-desktop/src-tauri/target/release/bundle/deb/` | Debian package (.deb) |
+| Linux | `vibevault-desktop/src-tauri/target/release/bundle/appimage/` | AppImage (portable) |
 
 ## Development
 
 ```bash
-cd vibevault-desktop/app
+cd vibevault-desktop
 
 # Start development server with hot reload
 npm run tauri dev
@@ -108,10 +108,9 @@ All vault data is stored locally in an SQLite database at:
 ```
 Password_Manager/                # git root (monorepo)
 ├── vibevault-desktop/           # Desktop app (Tauri 2.0)
-│   └── app/
-│       ├── src/                 # React frontend
-│       ├── src-tauri/           # Rust backend
-│       └── package.json
+│   ├── src/                     # React frontend
+│   ├── src-tauri/               # Rust backend
+│   └── package.json
 └── vibevault-ios/               # iOS app (SwiftUI)
     ├── Package.swift
     └── VibeVault/
@@ -121,7 +120,7 @@ Password_Manager/                # git root (monorepo)
 
 Desktop releases are automated via GitHub Actions. To create a new release:
 
-1. Update the version in `vibevault-desktop/app/src-tauri/tauri.conf.json`, `Cargo.toml`, and `package.json`
+1. Update the version in `vibevault-desktop/src-tauri/tauri.conf.json`, `Cargo.toml`, and `package.json`
 2. Commit and push to `master`
 3. Create and push a version tag:
    ```bash

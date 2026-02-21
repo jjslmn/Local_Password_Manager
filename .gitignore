@@ -3,7 +3,7 @@ node_modules/
 
 # Build outputs
 dist/
-vibevault-desktop/app/src-tauri/target/
+vibevault-desktop/src-tauri/target/
 
 # IDE
 .vscode/
