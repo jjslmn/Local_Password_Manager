@@ -11,8 +11,25 @@ function App() {
     const [error, setError] = useState("");
     const activityThrottle = useRef(0);
 
-    useEffect(() => {
-        checkRegistration();
+    const checkRegistration = useCallback(async () => {
+        try {
+            const status = await invoke("check_registration_status");
+            setIsRegistered(status as boolean);
+        } catch {
+            // Registration check failed, assume not registered
+        }
+    }, []);
+
+    const handleLogout = useCallback(async () => {
+        try {
+            await invoke("lock_vault");
+        } catch {
+            // Best-effort lock; clear frontend state regardless
+        }
+        setSessionToken("");
+        setIsAuthenticated(false);
+        setUsername("");
+        setPassword("");
     }, []);
 
     // Inactivity auto-lock: notify the backend on user interaction (throttled)
@@ -24,13 +41,17 @@ function App() {
     }, []);
 
     useEffect(() => {
+        checkRegistration();
+    }, [checkRegistration]);
+
+    useEffect(() => {
         if (!isAuthenticated) return;
         const events = ["mousemove", "keydown", "mousedown", "scroll", "touchstart"];
         events.forEach((e) => window.addEventListener(e, touchActivity));
         // Periodically check if session is still alive (every 60s)
         const interval = setInterval(async () => {
             try {
-                await invoke("get_all_vault_entries", { token: sessionToken });
+                await invoke("get_active_profile", { token: sessionToken });
             } catch {
                 // Session expired on backend — lock the UI
                 handleLogout();
@@ -40,16 +61,7 @@ function App() {
             events.forEach((e) => window.removeEventListener(e, touchActivity));
             clearInterval(interval);
         };
-    }, [isAuthenticated, sessionToken, touchActivity]);
-
-    async function checkRegistration() {
-        try {
-            const status = await invoke("check_registration_status");
-            setIsRegistered(status as boolean);
-        } catch {
-            // Registration check failed, assume not registered
-        }
-    }
+    }, [isAuthenticated, sessionToken, touchActivity, handleLogout]);
 
     async function handleRegister() {
         if (!username || !password) {
@@ -82,18 +94,6 @@ function App() {
         }
     }
 
-    async function handleLogout() {
-        try {
-            await invoke("lock_vault");
-        } catch {
-            // Best-effort lock; clear frontend state regardless
-        }
-        setSessionToken("");
-        setIsAuthenticated(false);
-        setUsername("");
-        setPassword("");
-    }
-
     if (isAuthenticated) {
         return <Dashboard onLogout={handleLogout} sessionToken={sessionToken} />;
     }
@@ -113,7 +113,11 @@ function App() {
                 style={{ width: "300px", textAlign: "center" }}
                 onSubmit={(e) => {
                     e.preventDefault();
-                    isRegistered ? handleLogin() : handleRegister();
+                    if (isRegistered) {
+                        handleLogin();
+                    } else {
+                        handleRegister();
+                    }
                 }}
             >
                 <h1 style={{ marginBottom: "10px" }}>VibeVault</h1>

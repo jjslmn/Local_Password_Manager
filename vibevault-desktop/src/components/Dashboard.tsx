@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { VaultEntry, Profile, DashboardProps, RawVaultEntry, PairedDevice, SyncHistoryEntry, SyncProgress } from "../types";
 
@@ -22,14 +22,51 @@ export default function Dashboard({ onLogout, sessionToken }: DashboardProps) {
 
     // Sync state
     const [syncState, setSyncState] = useState<SyncProgress["state"]>("idle");
-    const [syncProgress, setSyncProgress] = useState<SyncProgress>({ state: "idle", chunks_transferred: 0, total_chunks: 0, message: "" });
+    const [syncProgress, _setSyncProgress] = useState<SyncProgress>({ state: "idle", chunks_transferred: 0, total_chunks: 0, message: "" });
     const [pairedDevices, setPairedDevices] = useState<PairedDevice[]>([]);
     const [syncHistory, setSyncHistory] = useState<SyncHistoryEntry[]>([]);
     const [syncTab, setSyncTab] = useState<"sync" | "devices" | "history">("sync");
 
+    const refreshVault = useCallback(async () => {
+        try {
+            const rawData = await invoke<RawVaultEntry[]>("get_all_vault_entries", { token: sessionToken });
+            const parsed = rawData.map((e) => {
+                try {
+                    const jsonString = String.fromCharCode(...e.data_blob);
+                    const data = JSON.parse(jsonString);
+                    return { id: e.id, uuid: e.uuid, entryUuid: e.entry_uuid, ...data };
+                } catch {
+                    return { id: e.id, uuid: e.uuid, entryUuid: e.entry_uuid };
+                }
+            });
+            setEntries(parsed);
+        } catch (e) {
+            // Session expired — force logout
+            if (String(e).includes("Session expired")) {
+                onLogout();
+            }
+        }
+    }, [sessionToken, onLogout]);
+
+    const loadProfiles = useCallback(async () => {
+        try {
+            const profileList = await invoke<Profile[]>("get_all_profiles", { token: sessionToken });
+            setProfiles(profileList);
+            const activeId = await invoke<number>("get_active_profile", { token: sessionToken });
+            const active = profileList.find(p => p.id === activeId) || profileList[0];
+            setActiveProfile(active);
+            if (active) {
+                await invoke("set_active_profile", { id: active.id, token: sessionToken });
+                refreshVault();
+            }
+        } catch {
+            // Failed to load profiles
+        }
+    }, [sessionToken, refreshVault]);
+
     useEffect(() => {
         loadProfiles();
-    }, []);
+    }, [loadProfiles]);
 
     // Clear highlight after animation
     useEffect(() => {
@@ -56,23 +93,7 @@ export default function Dashboard({ onLogout, sessionToken }: DashboardProps) {
             }, 1000);
         }
         return () => clearInterval(interval);
-    }, [view, currentEntry.totpSecret]);
-
-    async function loadProfiles() {
-        try {
-            const profileList = await invoke<Profile[]>("get_all_profiles", { token: sessionToken });
-            setProfiles(profileList);
-            const activeId = await invoke<number>("get_active_profile", { token: sessionToken });
-            const active = profileList.find(p => p.id === activeId) || profileList[0];
-            setActiveProfile(active);
-            if (active) {
-                await invoke("set_active_profile", { id: active.id, token: sessionToken });
-                refreshVault();
-            }
-        } catch {
-            // Failed to load profiles
-        }
-    }
+    }, [view, currentEntry.totpSecret, sessionToken]);
 
     async function handleProfileSwitch(profile: Profile) {
         try {
@@ -137,27 +158,6 @@ export default function Dashboard({ onLogout, sessionToken }: DashboardProps) {
             await loadProfiles();
         } catch (e) {
             alert("Failed to delete profile: " + e);
-        }
-    }
-
-    async function refreshVault() {
-        try {
-            const rawData = await invoke<RawVaultEntry[]>("get_all_vault_entries", { token: sessionToken });
-            const parsed = rawData.map((e) => {
-                try {
-                    const jsonString = String.fromCharCode(...e.data_blob);
-                    const data = JSON.parse(jsonString);
-                    return { id: e.id, uuid: e.uuid, entryUuid: e.entry_uuid, ...data };
-                } catch {
-                    return { id: e.id, uuid: e.uuid, entryUuid: e.entry_uuid };
-                }
-            });
-            setEntries(parsed);
-        } catch (e) {
-            // Session expired — force logout
-            if (String(e).includes("Session expired")) {
-                onLogout();
-            }
         }
     }
 
@@ -262,7 +262,7 @@ export default function Dashboard({ onLogout, sessionToken }: DashboardProps) {
     async function handleForgetDevice(deviceId: string) {
         if (!confirm("Unpair this device? You'll need to pair again to sync.")) return;
         try {
-            await invoke("forget_device", { deviceId, token: sessionToken });
+            await invoke("forget_device", { device_id: deviceId, token: sessionToken });
             await loadPairedDevices();
         } catch (e) {
             alert("Failed to unpair device: " + e);
