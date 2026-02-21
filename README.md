@@ -1,13 +1,14 @@
 # VibeVault
 
-A secure, offline-first password manager built with Tauri 2.0. Store your credentials locally with strong encryption - your data never leaves your machine.
+A secure, offline-first password manager for desktop and iOS. Store your credentials locally with strong encryption - your data never leaves your devices. Sync between platforms over encrypted BLE.
 
 ## Features
 
 - **Local-first storage**: All data stored in SQLite on your device
 - **Strong encryption**: Argon2id password hashing with AES-256-GCM encryption
 - **TOTP support**: Built-in two-factor authentication code generator
-- **Desktop native**: Runs as a native app on Windows and Ubuntu
+- **Multi-platform**: Desktop (Windows, Ubuntu) via Tauri + iOS (SwiftUI)
+- **BLE sync**: Encrypted Bluetooth sync between desktop and iPhone
 
 ## Download & Install
 
@@ -45,12 +46,12 @@ sudo apt update
 sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 ```
 
-### Build Steps
+### Build Steps (Desktop)
 
 1. Clone the repository:
    ```bash
    git clone https://github.com/jjslmn/Local_Password_Manager.git
-   cd Local_Password_Manager
+   cd Local_Password_Manager/vibevault-desktop/app
    ```
 
 2. Install dependencies:
@@ -67,14 +68,16 @@ sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev
 
 | Platform | Output Location | Description |
 |----------|-----------------|-------------|
-| Windows | `src-tauri/target/release/bundle/nsis/` | NSIS installer (.exe) |
-| Windows | `src-tauri/target/release/bundle/msi/` | MSI installer |
-| Ubuntu | `src-tauri/target/release/bundle/deb/` | Debian package (.deb) |
-| Linux | `src-tauri/target/release/bundle/appimage/` | AppImage (portable) |
+| Windows | `vibevault-desktop/app/src-tauri/target/release/bundle/nsis/` | NSIS installer (.exe) |
+| Windows | `vibevault-desktop/app/src-tauri/target/release/bundle/msi/` | MSI installer |
+| Ubuntu | `vibevault-desktop/app/src-tauri/target/release/bundle/deb/` | Debian package (.deb) |
+| Linux | `vibevault-desktop/app/src-tauri/target/release/bundle/appimage/` | AppImage (portable) |
 
 ## Development
 
 ```bash
+cd vibevault-desktop/app
+
 # Start development server with hot reload
 npm run tauri dev
 
@@ -103,28 +106,29 @@ All vault data is stored locally in an SQLite database at:
 ## Project Structure
 
 ```
-vibevault/
-├── src/                    # React frontend
-│   ├── App.tsx            # Main app component
-│   └── components/        # UI components
-├── src-tauri/             # Rust backend
-│   ├── src/main.rs        # Tauri commands & database
-│   ├── tauri.conf.json    # Tauri configuration
-│   └── Cargo.toml         # Rust dependencies
-└── package.json           # Node.js dependencies
+Password_Manager/                # git root (monorepo)
+├── vibevault-desktop/           # Desktop app (Tauri 2.0)
+│   └── app/
+│       ├── src/                 # React frontend
+│       ├── src-tauri/           # Rust backend
+│       └── package.json
+└── vibevault-ios/               # iOS app (SwiftUI)
+    ├── Package.swift
+    └── VibeVault/
 ```
 
 ## Releases
 
-Releases are automated via GitHub Actions. To create a new release:
+Desktop releases are automated via GitHub Actions. To create a new release:
 
-1. Commit your changes and push to `master`
-2. Create and push a version tag:
+1. Update the version in `vibevault-desktop/app/src-tauri/tauri.conf.json`, `Cargo.toml`, and `package.json`
+2. Commit and push to `master`
+3. Create and push a version tag:
    ```bash
-   git tag v1.0.2
-   git push origin v1.0.2
+   git tag v1.0.3
+   git push origin v1.0.3
    ```
-3. GitHub Actions will build for Ubuntu and Windows, then publish to the [Releases](https://github.com/jjslmn/Local_Password_Manager/releases) page
+4. GitHub Actions will build for Ubuntu and Windows, then publish to the [Releases](https://github.com/jjslmn/Local_Password_Manager/releases) page
 
 ## License
 
