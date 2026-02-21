@@ -113,17 +113,27 @@ impl DatabaseManager {
             }
             if !Self::column_exists(conn, "vault_entries", "created_at") {
                 conn.execute(
-                    "ALTER TABLE vault_entries ADD COLUMN created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+                    "ALTER TABLE vault_entries ADD COLUMN created_at TEXT NOT NULL DEFAULT ''",
                     [],
                 )
                 .map_err(|e| format!("Failed to add created_at column: {}", e))?;
+                conn.execute(
+                    "UPDATE vault_entries SET created_at = datetime('now') WHERE created_at = ''",
+                    [],
+                )
+                .map_err(|e| format!("Failed to backfill created_at: {}", e))?;
             }
             if !Self::column_exists(conn, "vault_entries", "updated_at") {
                 conn.execute(
-                    "ALTER TABLE vault_entries ADD COLUMN updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+                    "ALTER TABLE vault_entries ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''",
                     [],
                 )
                 .map_err(|e| format!("Failed to add updated_at column: {}", e))?;
+                conn.execute(
+                    "UPDATE vault_entries SET updated_at = datetime('now') WHERE updated_at = ''",
+                    [],
+                )
+                .map_err(|e| format!("Failed to backfill updated_at: {}", e))?;
             }
             if !Self::column_exists(conn, "vault_entries", "deleted_at") {
                 conn.execute(
