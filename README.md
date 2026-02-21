@@ -18,10 +18,10 @@ Download the latest release for your platform from the [Releases](https://github
 
 | Platform | Download | Install Method |
 |----------|----------|----------------|
-| Windows 10/11 | `VibeVault_1.0.0_x64-setup.exe` | Run installer, follow prompts |
-| Windows 10/11 | `VibeVault_1.0.0_x64_en-US.msi` | Run MSI, follow prompts |
-| Ubuntu/Debian | `vibevault_1.0.0_amd64.deb` | `sudo dpkg -i vibevault_1.0.0_amd64.deb` |
-| Ubuntu/Linux | `vibevault_1.0.0_amd64.AppImage` | `chmod +x *.AppImage && ./vibevault_1.0.0_amd64.AppImage` |
+| Windows 10/11 | `VibeVault_1.0.3_x64-setup.exe` | Run installer, follow prompts |
+| Windows 10/11 | `VibeVault_1.0.3_x64_en-US.msi` | Run MSI, follow prompts |
+| Ubuntu/Debian | `vibevault_1.0.3_amd64.deb` | `sudo dpkg -i vibevault_1.0.3_amd64.deb` |
+| Ubuntu/Linux | `vibevault_1.0.3_amd64.AppImage` | `chmod +x *.AppImage && ./vibevault_1.0.3_amd64.AppImage` |
 
 After installation, VibeVault will appear in your applications menu and can be pinned to your taskbar.
 
